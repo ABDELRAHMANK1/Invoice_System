@@ -303,34 +303,29 @@ export async function buildInvoiceExcelBuffer(invoices: InvoiceExportRow[]): Pro
         });
         currentSheetRow += 2;
       } else {
-        const btwSoort = vatPct === 9 ? 1 : 2;
-        const inkNaam  = vatPct === 9 ? "Inkopen laag tarief"              : "Inkopen hoog tarief";
-        const inkNr    = vatPct === 9 ? 7001                               : 7002;
-        const btwNaam  = vatPct === 9 ? "BTW te vorderen laag (inkopen)"   : "BTW te vorderen hoog (inkopen)";
-        const btwNr    = vatPct === 9 ? 1681                               : 1582;
-
         addBookingRow(sheet, {
           ...common, ...dagboek,
           omschrijving:    { formula: `H${regel0Row}`, result: inv.client_name || "" },
           regel:           1,
           debet:           exclBtw,
           credit:          0,
-          grootboekNaam:   inkNaam,
-          grootboekNummer: inkNr,
-          btwSoort,
+          grootboekNaam:   "Inkoop laag tarief",
+          grootboekNummer: 7001,
+          btwSoort:        1,
           btwPercentage:   vatPct
         });
 
+        // Regel 2: BTW te vorderen — always account 1681 at 9% (Snelstart laag)
         addBookingRow(sheet, {
           ...common, ...dagboek,
           omschrijving:    { formula: `H${regel1Row}`, result: inv.client_name || "" },
           regel:           2,
           debet:           btwBedrag,
           credit:          0,
-          grootboekNaam:   btwNaam,
-          grootboekNummer: btwNr,
-          btwSoort,
-          btwPercentage:   vatPct
+          grootboekNaam:   "BTW te vorderen laag (inkopen)",
+          grootboekNummer: 1681,
+          btwSoort:        1,
+          btwPercentage:   9
         });
         currentSheetRow += 3;
       }

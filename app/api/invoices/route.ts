@@ -14,6 +14,15 @@ export async function GET(req: NextRequest) {
   const dateColumn = req.nextUrl.searchParams.get("date_column") === "created_at" ? "created_at" : "date";
   const ascending = filters.order === "created_at_asc";
 
+  const sortByParam = req.nextUrl.searchParams.get("sort_by") || "date";
+  const sortDirParam = req.nextUrl.searchParams.get("sort_dir") || "desc";
+  const sortAscending = sortDirParam === "asc";
+  const sortColumn =
+    sortByParam === "amount" ? "total_amount" :
+    sortByParam === "id"     ? "invoice_number" :
+    sortByParam === "client" ? "client_name" :
+    "date";
+
   let mainQuery = supabaseAdmin
     .from("invoices")
     .select("id,file_id,phone_number,invoice_number,client_name,date,total_amount,currency,file_url,status,confidence,created_at,invoice_direction", {
@@ -26,7 +35,7 @@ export async function GET(req: NextRequest) {
   aggQuery = applyCommonFilters(aggQuery, filters, dateColumn);
 
   const [{ data, count, error }, { data: amountRows }] = await Promise.all([
-    mainQuery.order("created_at", { ascending }).range(from, to),
+    mainQuery.order(sortColumn, { ascending: sortAscending }).order("created_at", { ascending: false }).range(from, to),
     aggQuery.limit(100000)
   ]);
 

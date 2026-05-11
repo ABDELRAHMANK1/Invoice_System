@@ -15,6 +15,7 @@ const schema = z.object({
   client:    z.string().optional().nullable(),
   invoice:   z.string().optional().nullable(),
   direction: z.enum(["inkoop", "verkoop"]).optional().nullable(),
+  ids:       z.array(z.string().uuid()).optional().nullable(),
   type:      z.enum(["excel", "zip"]).default("excel"),
   async_job: z.boolean().default(true)
 });
@@ -41,7 +42,11 @@ async function runInlineExport(req: NextRequest, jobId: string, body: z.infer<ty
     let query = supabaseAdmin
       .from("invoices")
       .select("id,invoice_number,client_name,phone_number,date,total_amount,currency,file_url,created_at,status,raw_extraction,invoice_direction");
-    query = applyCommonFilters(query, filters, "date");
+    if (body.ids && body.ids.length > 0) {
+      query = query.in("id", body.ids);
+    } else {
+      query = applyCommonFilters(query, filters, "date");
+    }
     const { data, error } = await query.order("created_at", { ascending: false }).limit(10000);
     if (error) throw new Error(error.message);
 

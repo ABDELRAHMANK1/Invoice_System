@@ -6,16 +6,19 @@ import { supabaseAdmin } from "@/lib/supabase-admin";
 export const runtime = "nodejs";
 
 const invoiceSchema = z.object({
-  file_id: z.string().uuid().optional().nullable(),
-  phone_number: z.string().min(5),
-  invoice_number: z.string().min(1),
-  client_name: z.string().optional().nullable(),
-  date: z.string().optional().nullable(),
-  total_amount: z.number().optional().nullable(),
-  currency: z.string().length(3).optional().nullable(),
-  file_url: z.string().min(8),
-  confidence: z.number().min(0).max(1).optional().nullable(),
-  status: z.enum(["extracted", "pending", "error"]).optional()
+  file_id:          z.string().uuid().optional().nullable(),
+  phone_number:     z.string().min(5),
+  invoice_number:   z.string().min(1),
+  client_name:      z.string().optional().nullable(),
+  date:             z.string().optional().nullable(),
+  total_amount:     z.number().optional().nullable(),
+  currency:         z.string().length(3).optional().nullable(),
+  file_url:         z.string().min(8),
+  confidence:       z.number().min(0).max(1).optional().nullable(),
+  status:           z.enum(["extracted", "pending", "error"]).optional(),
+  // Extraction metadata — kept in raw_extraction, not top-level DB columns
+  vat_rate:         z.number().optional().nullable(),
+  transaction_type: z.enum(["inkoop", "verkoop"]).optional().nullable()
 });
 
 const schema = z.object({
@@ -29,12 +32,15 @@ export async function POST(req: NextRequest) {
   const parsed = schema.safeParse(await req.json());
   if (!parsed.success) return jsonError("Invalid invoice batch payload", 400, parsed.error.flatten());
 
-  const rows = parsed.data.invoices.map((invoice) => ({
-    ...invoice,
-    status: invoice.status || "extracted",
-    currency: invoice.currency || "EUR",
-    raw_extraction: invoice
-  }));
+  const rows = parsed.data.invoices.map((invoice) => {
+    const { vat_rate, transaction_type, ...dbFields } = invoice;
+    return {
+      ...dbFields,
+      status:         dbFields.status   || "extracted",
+      currency:       dbFields.currency || "EUR",
+      raw_extraction: { ...dbFields, vat_rate, transaction_type }
+    };
+  });
 
   if (rows.length === 0) return NextResponse.json({ inserted: 0, data: [] });
 

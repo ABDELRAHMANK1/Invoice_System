@@ -14,6 +14,8 @@ create table if not exists public.files (
   status varchar(20) not null default 'pending'
     check (status in ('pending', 'processing', 'done', 'error')),
   error_message text,
+  invoice_direction varchar(10)
+    check (invoice_direction is null or invoice_direction in ('inkoop', 'verkoop')),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );

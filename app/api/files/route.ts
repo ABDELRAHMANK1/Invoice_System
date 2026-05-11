@@ -4,12 +4,12 @@ import { requireInternalApiKey, jsonError } from "@/lib/http";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
 const SaveFileSchema = z.object({
-  phone_number: z.string().min(1),
-  file_key:     z.string().min(1),
-  file_type:    z.enum(["image", "pdf"]),
-  file_name:    z.string().optional().nullable(),
-  file_size:    z.number().int().nonnegative().optional().nullable(),
-  mime_type:    z.string().optional().nullable()
+  phone_number:      z.string().min(1),
+  file_key:          z.string().min(1),
+  file_type:         z.enum(["image", "pdf", "document"]),
+  file_name:         z.string().optional().nullable(),
+  mime_type:         z.string().optional().nullable(),
+  invoice_direction: z.enum(["inkoop", "verkoop"]).optional().nullable(),
 });
 
 export async function POST(req: NextRequest) {
@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const { phone_number, file_key, file_type, file_name, file_size, mime_type } = parsed.data;
+const { phone_number, file_key, file_type, file_name, mime_type } = parsed.data;
 
   const { data, error } = await supabaseAdmin
     .from("files")
@@ -40,7 +40,6 @@ export async function POST(req: NextRequest) {
       file_key,
       file_type,
       file_name:  file_name  ?? null,
-      file_size:  file_size  ?? null,
       mime_type:  mime_type  ?? null,
       status:     "pending"
     })
