@@ -1,0 +1,54 @@
+# Node / build artifacts
+node_modules
+.next
+out
+dist
+
+# Local environment files — these stay outside the image and are
+# injected at runtime via env_file in docker-compose.yml
+.env
+.env.local
+.env.development
+.env.*.local
+
+# Git / editor / OS
+.git
+.gitignore
+.gitattributes
+.idea
+.vscode
+.DS_Store
+Thumbs.db
+*.swp
+
+# Tests, fixtures, runtime artifacts
+__tests__
+e2e
+load-tests
+test-results
+playwright-report
+coverage
+vitest.config.ts
+vitest.setup.ts
+playwright.config.ts
+
+# Claude Code / agent metadata
+.agents
+.claude
+skills-lock.json
+
+# Logs and runtime export output
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+public/exports
+
+# Docker meta (don't recurse)
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.*.yml
+
+# Markdown that doesn't need to ship with the image
+README.md
+*.md
