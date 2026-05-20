@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-const { phone_number, file_key, file_type, file_name, mime_type } = parsed.data;
+const { phone_number, file_key, file_type, file_name, mime_type, invoice_direction } = parsed.data;
 
   const { data, error } = await supabaseAdmin
     .from("files")
@@ -41,6 +41,7 @@ const { phone_number, file_key, file_type, file_name, mime_type } = parsed.data;
       file_type,
       file_name:  file_name  ?? null,
       mime_type:  mime_type  ?? null,
+      invoice_direction: invoice_direction ?? "inkoop",
       status:     "pending"
     })
     .select("id, phone_number, file_key, file_type, status, created_at")

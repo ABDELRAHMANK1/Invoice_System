@@ -32,6 +32,8 @@ export const I = {
   alert:     ["M12 9v4", "M12 17h.01", "M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"] as string[],
   inflow:    ["M12 19V5","M5 12l7-7 7 7"] as string[],
   outflow:   ["M12 5v14","M5 12l7 7 7-7"] as string[],
+  sun:       ["M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10Z","M12 1v2","M12 21v2","M4.2 4.2l1.4 1.4","M18.4 18.4l1.4 1.4","M1 12h2","M21 12h2","M4.2 19.8l1.4-1.4","M18.4 5.6l1.4-1.4"] as string[],
+  moon:      "M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z",
 };
 
 export type IconPath = string | string[];

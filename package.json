@@ -7,11 +7,19 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:unit": "vitest run lib/__tests__ app/components/__tests__",
+    "test:integration": "vitest run app/api/__tests__",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:load": "artillery run load-tests/invoices-list.yml",
+    "test:load:export": "artillery run load-tests/export-excel.yml"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1030.0",
-    "@aws-sdk/s3-request-presigner": "^3.1030.0",
+    "@aws-sdk/s3-request-presigner": "^3.1050.0",
     "@supabase/supabase-js": "^2.49.1",
     "exceljs": "^4.4.0",
     "jszip": "^3.10.1",
@@ -22,11 +30,19 @@
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/node": "^22.13.10",
     "@types/react": "^19.0.10",
     "@types/react-dom": "^19.0.4",
+    "@vitejs/plugin-react": "^6.0.2",
+    "artillery": "^2.0.32",
     "eslint": "^9.22.0",
     "eslint-config-next": "^15.2.1",
-    "typescript": "^5.8.2"
+    "jsdom": "^29.1.1",
+    "typescript": "^5.8.2",
+    "vitest": "^4.1.6"
   }
 }

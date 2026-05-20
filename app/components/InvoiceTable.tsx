@@ -5,7 +5,7 @@ import { Pill, TypePill, statusTone, statusLabel } from "./Pill";
 import { ConfidenceBar } from "./ConfidenceBar";
 
 const CLIENT_COLORS = [
-  "#ea5b14","#2563eb","#1f8a5b","#7a5af0",
+  "#1d4ed8","#2563eb","#1f8a5b","#7a5af0",
   "#b45309","#c0392b","#0e7490","#9333ea",
 ];
 

@@ -16,6 +16,7 @@ const invoiceSchema = z.object({
   file_url:         z.string().min(8),
   confidence:       z.number().min(0).max(1).optional().nullable(),
   status:           z.enum(["extracted", "pending", "error"]).optional(),
+  invoice_direction: z.enum(["inkoop", "verkoop"]).optional().nullable(),
   // Extraction metadata — kept in raw_extraction, not top-level DB columns
   vat_rate:         z.number().optional().nullable(),
   transaction_type: z.enum(["inkoop", "verkoop"]).optional().nullable()
@@ -36,9 +37,10 @@ export async function POST(req: NextRequest) {
     const { vat_rate, transaction_type, ...dbFields } = invoice;
     return {
       ...dbFields,
-      status:         dbFields.status   || "extracted",
-      currency:       dbFields.currency || "EUR",
-      raw_extraction: { ...dbFields, vat_rate, transaction_type }
+      invoice_direction: dbFields.invoice_direction ?? "inkoop",
+      status:            dbFields.status   || "extracted",
+      currency:          dbFields.currency || "EUR",
+      raw_extraction:    { ...dbFields, vat_rate, transaction_type }
     };
   });
 

@@ -1,0 +1,56 @@
+# Artillery load test — GET /api/invoices
+#
+# Run against a running production server (default http://localhost:3000).
+# Override with: TARGET=https://staging.example.com npx artillery run …
+#
+# The internal API key auth is satisfied by sending the x-api-key header
+# (matches API_INTERNAL_KEY in .env.local).
+#
+# Goals:
+#   • 50 concurrent virtual users
+#   • p95 response time < 2000 ms
+#   • zero 5xx errors
+
+config:
+  target: "{{ $processEnvironment.TARGET || 'http://localhost:3000' }}"
+  phases:
+    - name: warmup
+      duration: 15
+      arrivalRate: 5
+    - name: ramp-to-50-vus
+      duration: 30
+      arrivalRate: 10
+      rampTo: 50
+    - name: sustained-50-vus
+      duration: 60
+      arrivalRate: 50
+  defaults:
+    headers:
+      x-api-key: "{{ $processEnvironment.API_INTERNAL_KEY || 'test-internal-key' }}"
+  ensure:
+    thresholds:
+      - http.response_time.p95: 2000
+    conditions:
+      - expression: http.codes.5xx == 0
+
+scenarios:
+  - name: list invoices (no filter)
+    flow:
+      - get:
+          url: "/api/invoices?page=1&limit=20"
+          expect:
+            - statusCode: 200
+
+  - name: list invoices (direction=inkoop)
+    flow:
+      - get:
+          url: "/api/invoices?page=1&limit=20&direction=inkoop"
+          expect:
+            - statusCode: 200
+
+  - name: list invoices (date range)
+    flow:
+      - get:
+          url: "/api/invoices?from=2026-01-01&to=2026-12-31"
+          expect:
+            - statusCode: 200

@@ -106,8 +106,23 @@ export async function extractInvoicesFromUrls(fileUrls: string[]): Promise<Extra
   if (fileUrls.length > 10) throw new Error("Batch too large. Send 5-10 files per extraction request.");
   if (!client) throw new Error("OPENAI_API_KEY is not configured");
 
+  // Generate signed URLs for S3 files
   const signedUrls = await Promise.all(
-    fileUrls.map(async (fileUrl) => (fileUrl.startsWith("s3://") ? signedReadUrl(fileUrl, 60 * 20) : fileUrl))
+    fileUrls.map(async (fileUrl) =>
+      fileUrl.startsWith("s3://") ? signedReadUrl(fileUrl, 60 * 20) : fileUrl
+    )
+  );
+
+  // Download files and convert to base64 so GPT can read them regardless of URL format
+  const fileBuffers = await Promise.all(
+    signedUrls.map(async (url) => {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Failed to download file from S3: ${res.status}`);
+      const arrayBuffer = await res.arrayBuffer();
+      const mimeType = res.headers.get("content-type") || "application/octet-stream";
+      const base64 = Buffer.from(arrayBuffer).toString("base64");
+      return { base64, mimeType };
+    })
   );
 
   return withRetry(async () => {
@@ -116,13 +131,27 @@ export async function extractInvoicesFromUrls(fileUrls: string[]): Promise<Extra
         type: "input_text",
         text: EXTRACTION_PROMPT
       },
-      ...signedUrls.map((url) => {
-        const lower = url.toLowerCase();
-        if (lower.includes(".pdf") || lower.includes("content-type=application%2Fpdf")) {
-          return { type: "input_file", file_url: url };
+      ...fileBuffers.map(({ base64, mimeType }, index) => {
+        const originalLower = fileUrls[index].toLowerCase();
+
+        const isPdf =
+          mimeType === "application/pdf" ||
+          originalLower.includes(".pdf");
+
+        if (isPdf) {
+          return {
+            type: "input_file",
+            filename: "invoice.pdf",
+            file_data: `data:application/pdf;base64,${base64}`
+          };
         }
 
-        return { type: "input_image", image_url: url, detail: "high" };
+        const imageMime = mimeType.startsWith("image/") ? mimeType : "image/jpeg";
+        return {
+          type: "input_image",
+          image_url: `data:${imageMime};base64,${base64}`,
+          detail: "high"
+        };
       })
     ];
 

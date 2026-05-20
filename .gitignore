@@ -18,6 +18,12 @@ tsconfig.tsbuildinfo
 
 # Claude Code local project settings
 .claude/
+.agents/
+skills-lock.json
+
+# Playwright runtime artifacts
+test-results/
+playwright-report/
 
 # OS / editor
 .DS_Store

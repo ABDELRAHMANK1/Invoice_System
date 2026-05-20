@@ -21,7 +21,7 @@ type Client = {
 type Paged<T> = { data: T[]; total: number; page: number; limit: number; totalPages: number };
 const emptyPage: Paged<Client> = { data: [], total: 0, page: 1, limit: 50, totalPages: 0 };
 
-const CLIENT_COLORS = ["#ea5b14","#2563eb","#1f8a5b","#7a5af0","#b45309","#c0392b","#0e7490","#9333ea"];
+const CLIENT_COLORS = ["#1d4ed8","#2563eb","#1f8a5b","#7a5af0","#b45309","#c0392b","#0e7490","#9333ea"];
 
 function clientColor(name: string) {
   let h = 0;
