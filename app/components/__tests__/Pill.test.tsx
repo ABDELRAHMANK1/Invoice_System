@@ -35,8 +35,8 @@ describe("TypePill", () => {
 });
 
 describe("statusTone()", () => {
-  it("maps extracted/done → good", () => {
-    expect(statusTone("extracted")).toBe("good");
+  it("maps extracted → info (blue), done → good (green)", () => {
+    expect(statusTone("extracted")).toBe("info");
     expect(statusTone("done")).toBe("good");
   });
 

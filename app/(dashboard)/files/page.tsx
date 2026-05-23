@@ -54,6 +54,26 @@ export default function FilesPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  async function deleteFile(file: FileRow) {
+    const label = file.file_name || file.file_key.split("/").pop() || file.id.slice(0, 8);
+    if (!confirm(`Delete "${label}"? This cannot be undone.`)) return;
+    try {
+      const res = await fetch(`/api/files/${file.id}`, { method: "DELETE" });
+      if (!res.ok && res.status !== 204) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `Delete failed: ${res.status}`);
+      }
+      toast("File deleted", "success");
+      setFiles((prev) => ({
+        ...prev,
+        total: Math.max(0, prev.total - 1),
+        data: prev.data.filter((f) => f.id !== file.id),
+      }));
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Delete failed", "error");
+    }
+  }
+
   async function retry(fileId: string) {
     try {
       await apiJson(`/api/files/${fileId}/status`, {
@@ -160,6 +180,14 @@ export default function FilesPage() {
                     <Icon d={I.refresh} size={14} />
                   </button>
                 )}
+                <button
+                  className="act"
+                  title="Delete"
+                  onClick={() => deleteFile(file)}
+                  aria-label="Delete file"
+                >
+                  <Icon d={I.trash} size={14} />
+                </button>
               </div>
             </div>
           ))

@@ -29,7 +29,7 @@ function makeChain(vi, initial) {
   };
 
   const chainable = [
-    "select", "eq", "ilike", "gte", "lte", "in", "or",
+    "select", "eq", "ilike", "gte", "lte", "in", "or", "not",
     "order", "range", "limit", "single",
     "insert", "update", "delete", "upsert",
   ];

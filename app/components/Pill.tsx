@@ -30,7 +30,8 @@ export function TypePill({ type }: TypePillProps) {
 }
 
 export function statusTone(status: string): StatusTone {
-  if (status === "extracted" || status === "done") return "good";
+  if (status === "extracted") return "info";
+  if (status === "done") return "good";
   if (status === "pending" || status === "processing") return "info";
   if (status === "review") return "warn";
   return "danger";

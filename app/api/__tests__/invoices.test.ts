@@ -53,15 +53,26 @@ describe("GET /api/invoices", () => {
     expect(eqCalls).toContainEqual({ method: "eq", args: ["invoice_direction", "inkoop"] });
   });
 
-  it("applies client and invoice ilike filters", async () => {
-    const t = mockSupabase._table("invoices");
-    t._setResult({ data: [], error: null, count: 0 });
+  it("applies invoice ilike + client OR-search (company name OR sender phone)", async () => {
+    const invoicesT = mockSupabase._table("invoices");
+    invoicesT._setResult({ data: [], error: null, count: 0 });
+    const clientsT = mockSupabase._table("clients");
+    clientsT._setResult({ data: [], error: null });
 
     await GET(req("http://localhost/api/invoices?client=Nema&invoice=INV-1"));
 
-    const ilikeCalls = t._calls.filter((c: { method: string; args: unknown[] }) =>c.method === "ilike");
-    expect(ilikeCalls).toContainEqual({ method: "ilike", args: ["client_name", "%Nema%"] });
+    // Invoice filter still goes through .ilike directly
+    const ilikeCalls = invoicesT._calls.filter((c: { method: string; args: unknown[] }) => c.method === "ilike");
     expect(ilikeCalls).toContainEqual({ method: "ilike", args: ["invoice_number", "%INV-1%"] });
+
+    // Client filter goes through .or() with at minimum a client_name ilike condition
+    const orCalls = invoicesT._calls.filter((c: { method: string; args: unknown[] }) => c.method === "or");
+    expect(orCalls.length).toBeGreaterThan(0);
+    expect(String(orCalls[0]?.args[0])).toContain("client_name.ilike.%Nema%");
+
+    // And the clients table was searched for matching senders
+    const clientsIlike = clientsT._calls.filter((c: { method: string; args: unknown[] }) => c.method === "ilike");
+    expect(clientsIlike).toContainEqual({ method: "ilike", args: ["name", "%Nema%"] });
   });
 
   it("uses sort_by and sort_dir from query string", async () => {

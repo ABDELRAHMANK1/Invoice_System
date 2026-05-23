@@ -14,12 +14,34 @@ export type FilterQuery = {
 export type AppliedChip = { k: string; v: string };
 
 const QUICK_CHIPS = [
-  { k: "today",   label: "Today" },
-  { k: "week",    label: "This week" },
-  { k: "month",   label: "This month" },
-  { k: "pending", label: "Pending review" },
-  { k: "high",    label: "Above €500" },
+  { k: "today",    label: "Today" },
+  { k: "month",    label: "This month" },
+  { k: "3months",  label: "3 months" },
+  { k: "pending",  label: "Pending review" },
+  { k: "high",     label: "Above €500" },
 ];
+
+function toISODate(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+// Compute from/to dates for a given quick chip. Returns null when the chip
+// is not a date-range one (e.g. pending / high) — those just toggle UI state.
+function quickDateRange(k: string): { from: string; to: string } | null {
+  const today = new Date();
+  const todayISO = toISODate(today);
+  if (k === "today") return { from: todayISO, to: todayISO };
+  if (k === "month") {
+    const first = new Date(today.getFullYear(), today.getMonth(), 1);
+    return { from: toISODate(first), to: todayISO };
+  }
+  if (k === "3months") {
+    const start = new Date(today);
+    start.setMonth(start.getMonth() - 3);
+    return { from: toISODate(start), to: todayISO };
+  }
+  return null;
+}
 
 interface FilterBarProps {
   q: FilterQuery;
@@ -118,7 +140,17 @@ export function FilterBar({
           <button
             key={chip.k}
             className={`chip${quickOn === chip.k ? " on" : ""}`}
-            onClick={() => setQuickOn(quickOn === chip.k ? "" : chip.k)}
+            onClick={() => {
+              const next = quickOn === chip.k ? "" : chip.k;
+              setQuickOn(next);
+              const range = next ? quickDateRange(next) : null;
+              if (range) {
+                setQ({ ...q, from: range.from, to: range.to });
+              } else if (!next && quickDateRange(chip.k)) {
+                // Toggling OFF a date chip clears the dates we set.
+                setQ({ ...q, from: "", to: "" });
+              }
+            }}
             aria-pressed={quickOn === chip.k}
           >
             {quickOn === chip.k && <Icon d={I.check} size={11} stroke={2.4} />}

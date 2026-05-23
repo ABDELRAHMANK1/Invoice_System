@@ -190,8 +190,8 @@ a.nav-item { text-decoration: none; display: flex; }
 .pill.s-info { background: var(--info-soft); color: var(--info); }
 .pill.s-warn { background: var(--warn-soft); color: var(--warn); }
 .pill.s-danger { background: var(--danger-soft); color: var(--danger); }
-.pill.t-inkoop { background: var(--info-soft); color: var(--info); }
-.pill.t-verkoop { background: var(--accent-soft); color: var(--accent); }
+.pill.t-inkoop { background: var(--danger-soft); color: var(--danger); }
+.pill.t-verkoop { background: var(--good-soft); color: var(--good); }
 
 /* ── Row actions ── */
 .row-actions { display: flex; gap: 2px; opacity: 0; transition: opacity .12s; justify-content: flex-end; align-items: center; }

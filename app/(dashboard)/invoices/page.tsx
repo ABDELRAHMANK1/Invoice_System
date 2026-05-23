@@ -102,6 +102,31 @@ export default function InvoicesPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  async function deleteInvoice(row: InvoiceRow) {
+    if (!confirm(`Delete invoice ${row.invoice_number || row.id.slice(0, 8)}? This cannot be undone.`)) return;
+    try {
+      const res = await fetch(`/api/invoices/${row.id}`, { method: "DELETE" });
+      if (!res.ok && res.status !== 204) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `Delete failed: ${res.status}`);
+      }
+      toast("Invoice deleted", "success");
+      setInvoices((prev) => ({
+        ...prev,
+        total: Math.max(0, prev.total - 1),
+        data: prev.data.filter((r) => r.id !== row.id),
+      }));
+      setSelected((prev) => {
+        if (!prev.has(row.id)) return prev;
+        const ns = new Set(prev);
+        ns.delete(row.id);
+        return ns;
+      });
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Delete failed", "error");
+    }
+  }
+
   function applySearch() {
     setCommitted(q);
     setPage(1);
@@ -254,6 +279,7 @@ export default function InvoicesPage() {
         setSort={handleSort}
         onOpen={(row) => setDrawer(row)}
         onPage={(p) => setPage(p)}
+        onDelete={deleteInvoice}
         loading={loading}
       />
 

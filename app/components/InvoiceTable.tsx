@@ -4,16 +4,18 @@ import { Icon, I } from "./Icon";
 import { Pill, TypePill, statusTone, statusLabel } from "./Pill";
 import { ConfidenceBar } from "./ConfidenceBar";
 
-const CLIENT_COLORS = [
-  "#1d4ed8","#2563eb","#1f8a5b","#7a5af0",
-  "#b45309","#c0392b","#0e7490","#9333ea",
-];
+// Avatar color comes from the invoice direction (inkoop = warm reds,
+// verkoop = greens). The hash of the name selects a shade within that
+// palette so different senders are still visually distinguishable.
+const INKOOP_COLORS  = ["#c0392b", "#b42318", "#e74c3c", "#dc2626"];
+const VERKOOP_COLORS = ["#15803d", "#1f8a5b", "#10b981", "#059669"];
 
-function clientColor(name: string | null): string {
-  if (!name) return CLIENT_COLORS[0];
+function avatarColor(name: string | null, direction: "inkoop" | "verkoop" | null): string {
+  const palette = direction === "verkoop" ? VERKOOP_COLORS : INKOOP_COLORS;
+  if (!name) return palette[0];
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) & 0x7fffffff;
-  return CLIENT_COLORS[h % CLIENT_COLORS.length];
+  return palette[h % palette.length];
 }
 
 function clientInitials(name: string | null): string {
@@ -42,6 +44,7 @@ export interface InvoiceRow {
   phone_number: string;
   invoice_number: string;
   client_name: string | null;
+  sender_name?: string | null;
   date: string | null;
   total_amount: number | null;
   currency: string;
@@ -91,12 +94,13 @@ interface InvoiceTableProps {
   setSort: (s: Sort) => void;
   onOpen: (row: InvoiceRow) => void;
   onPage: (p: number) => void;
+  onDelete?: (row: InvoiceRow) => void;
   loading?: boolean;
 }
 
 export function InvoiceTable({
   rows, total, page, totalPages, selected, setSelected,
-  sort, setSort, onOpen, onPage, loading,
+  sort, setSort, onOpen, onPage, onDelete, loading,
 }: InvoiceTableProps) {
   const allOn = rows.length > 0 && rows.every((r) => selected.has(r.id));
 
@@ -140,7 +144,7 @@ export function InvoiceTable({
           <SortHead k="id" sort={sort} setSort={setSort}>Invoice #</SortHead>
         </div>
         <div>
-          <SortHead k="client" sort={sort} setSort={setSort}>Client</SortHead>
+          <SortHead k="client" sort={sort} setSort={setSort}>Sender</SortHead>
         </div>
         <div>Phone</div>
         <div>
@@ -164,8 +168,12 @@ export function InvoiceTable({
           const sel = selected.has(row.id);
           const pct = row.confidence != null ? Math.min(100, Math.round(row.confidence * 100)) : 0;
           const type = row.invoice_direction === "verkoop" ? "Verkoop" : "Inkoop";
-          const color = clientColor(row.client_name);
-          const initials = clientInitials(row.client_name);
+          // Display: sender (from clients table by phone match) is primary,
+          // the extracted company name on the invoice goes underneath.
+          const senderDisplay = row.sender_name || row.client_name || row.phone_number || "—";
+          const companySub    = row.sender_name && row.client_name ? row.client_name : null;
+          const color    = avatarColor(senderDisplay, row.invoice_direction);
+          const initials = clientInitials(senderDisplay);
 
           return (
             <div
@@ -193,8 +201,8 @@ export function InvoiceTable({
               <div className="cell-client">
                 <div className="client-av" style={{ background: color }}>{initials}</div>
                 <div style={{ minWidth: 0 }}>
-                  <div className="client-name">{row.client_name || "—"}</div>
-                  <div className="client-phone">{row.phone_number}</div>
+                  <div className="client-name">{senderDisplay}</div>
+                  <div className="client-phone">{companySub ?? row.phone_number}</div>
                 </div>
               </div>
 
@@ -225,9 +233,16 @@ export function InvoiceTable({
                 >
                   <Icon d={I.download} size={14} />
                 </a>
-                <button className="act" title="More" onClick={(e) => e.stopPropagation()}>
-                  <Icon d={I.more} size={14} stroke={2.6} />
-                </button>
+                {onDelete && (
+                  <button
+                    className="act"
+                    title="Delete"
+                    onClick={(e) => { e.stopPropagation(); onDelete(row); }}
+                    aria-label={`Delete invoice ${row.invoice_number}`}
+                  >
+                    <Icon d={I.trash} size={14} />
+                  </button>
+                )}
               </div>
             </div>
           );
