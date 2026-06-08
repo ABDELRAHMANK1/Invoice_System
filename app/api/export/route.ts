@@ -10,13 +10,46 @@ export const runtime = "nodejs";
 
 type SupplierRow = { client_id: string; name: string; relatie_code: string | null };
 
+const SUPPLIER_STOPWORDS = new Set([
+  "b.v.", "bv", "b.v", "n.v.", "nv", "v.o.f.", "vof", "cv",
+  "de", "het", "den", "der",
+  "en", "&", "+",
+  "zn", "zonen", "gebr", "gebrs", "bros", "brothers",
+  "the", "of", "and", "co", "co.", "ltd", "inc", "gmbh",
+  "cash", "carry",
+]);
+
 function normaliseName(value: string | null | undefined): string {
   return (value ?? "").trim().toLowerCase();
 }
 
-function fuzzyMatch(supplierName: string, invoiceSupplier: string): boolean {
-  if (!supplierName || !invoiceSupplier) return false;
-  return supplierName.includes(invoiceSupplier) || invoiceSupplier.includes(supplierName);
+function significantTokens(value: string | null | undefined): string[] {
+  return normaliseName(value)
+    .replace(/[.,/\\()'"!?]/g, " ")
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 2 && !SUPPLIER_STOPWORDS.has(t));
+}
+
+/**
+ * Score how well a DB supplier name matches an invoice supplier_name.
+ * Returns the count of significant token overlaps (case-insensitive),
+ * with a small bonus when either side fully contains the other as a substring.
+ * Zero = no match.
+ */
+function scoreMatch(supplierName: string, invoiceSupplier: string): number {
+  const dbTokens  = new Set(significantTokens(supplierName));
+  const invTokens = significantTokens(invoiceSupplier);
+  if (dbTokens.size === 0 || invTokens.length === 0) return 0;
+
+  let overlap = 0;
+  for (const t of invTokens) if (dbTokens.has(t)) overlap += 1;
+
+  const dbNorm  = normaliseName(supplierName);
+  const invNorm = normaliseName(invoiceSupplier);
+  const substringBonus = dbNorm.includes(invNorm) || invNorm.includes(dbNorm) ? 1 : 0;
+
+  return overlap + substringBonus;
 }
 
 /**
@@ -65,11 +98,26 @@ async function attachRelatieCodes(rows: InvoiceExportRow[]): Promise<InvoiceExpo
     }
 
     const candidates = suppliersByClient.get(client.id) ?? [];
-    const target = normaliseName(row.supplier_name);
-    if (!target) return row;
+    if (!row.supplier_name) {
+      console.log(`[export.relatie] inv=${row.invoice_number} supplier_name=<empty> match=none`);
+      return row;
+    }
 
-    const match = candidates.find((s) => fuzzyMatch(normaliseName(s.name), target));
-    return match?.relatie_code ? { ...row, relatie_code: match.relatie_code } : row;
+    let best: { supplier: SupplierRow; score: number } | null = null;
+    for (const s of candidates) {
+      const score = scoreMatch(s.name, row.supplier_name);
+      if (score > 0 && (best === null || score > best.score)) {
+        best = { supplier: s, score };
+      }
+    }
+
+    if (!best) {
+      console.log(`[export.relatie] inv=${row.invoice_number} supplier_name="${row.supplier_name}" match=NONE (candidates=${candidates.length})`);
+      return row;
+    }
+
+    console.log(`[export.relatie] inv=${row.invoice_number} supplier_name="${row.supplier_name}" matched="${best.supplier.name}" code=${best.supplier.relatie_code ?? "<null>"} score=${best.score}`);
+    return best.supplier.relatie_code ? { ...row, relatie_code: best.supplier.relatie_code } : row;
   });
 }
 
