@@ -11,6 +11,7 @@ export interface InvoiceExportRow {
   id: string;
   invoice_number: string;
   client_name: string | null;
+  supplier_name?: string | null;
   phone_number: string;
   date: string | null;
   total_amount: number | null;
@@ -276,23 +277,25 @@ export async function buildInvoiceExcelBuffer(invoices: InvoiceExportRow[]): Pro
     } else {
       // inkoop (default)
       const dagboek = { dagboekSoort: "dagboek Inkoop", dagboekNaam: "Crediteuren", dagboekNummer: 1600 };
+      const inkoopParty   = inv.supplier_name || inv.client_name || null;
+      const inkoopCommon  = { ...common, relatieNaam: inkoopParty };
 
       addBookingRow(sheet, {
-        ...common, ...dagboek,
-        omschrijving:    inv.client_name || null,
+        ...inkoopCommon, ...dagboek,
+        omschrijving:    inkoopParty,
         regel:           0,
         debet:           0,
         credit:          totalIncl,
-        grootboekNaam:   "Crediteuren",
-        grootboekNummer: 1600,
+        grootboekNaam:   "Debiteuren",
+        grootboekNummer: 1300,
         btwSoort:        0,
         btwPercentage:   null
       });
 
       if (vatPct === 0) {
         addBookingRow(sheet, {
-          ...common, ...dagboek,
-          omschrijving:    { formula: `H${regel0Row}`, result: inv.client_name || "" },
+          ...inkoopCommon, ...dagboek,
+          omschrijving:    { formula: `H${regel0Row}`, result: inkoopParty || "" },
           regel:           1,
           debet:           totalIncl,
           credit:          0,
@@ -303,29 +306,34 @@ export async function buildInvoiceExcelBuffer(invoices: InvoiceExportRow[]): Pro
         });
         currentSheetRow += 2;
       } else {
+        const btwSoort    = vatPct === 9 ? 1 : 2;
+        const inkoopNaam  = vatPct === 9 ? "Inkoop laag tarief"             : "Inkoop hoog tarief";
+        const inkoopNr    = vatPct === 9 ? 7001                              : 7002;
+        const btwNaam     = vatPct === 9 ? "BTW te vorderen laag (inkopen)" : "BTW te vorderen hoog (inkopen)";
+        const btwNr       = vatPct === 9 ? 1681                              : 1680;
+
         addBookingRow(sheet, {
-          ...common, ...dagboek,
-          omschrijving:    { formula: `H${regel0Row}`, result: inv.client_name || "" },
+          ...inkoopCommon, ...dagboek,
+          omschrijving:    { formula: `H${regel0Row}`, result: inkoopParty || "" },
           regel:           1,
           debet:           exclBtw,
           credit:          0,
-          grootboekNaam:   "Inkoop laag tarief",
-          grootboekNummer: 7001,
-          btwSoort:        1,
+          grootboekNaam:   inkoopNaam,
+          grootboekNummer: inkoopNr,
+          btwSoort,
           btwPercentage:   vatPct
         });
 
-        // Regel 2: BTW te vorderen — always account 1681 at 9% (Snelstart laag)
         addBookingRow(sheet, {
-          ...common, ...dagboek,
-          omschrijving:    { formula: `H${regel1Row}`, result: inv.client_name || "" },
+          ...inkoopCommon, ...dagboek,
+          omschrijving:    { formula: `H${regel1Row}`, result: inkoopParty || "" },
           regel:           2,
           debet:           btwBedrag,
           credit:          0,
-          grootboekNaam:   "BTW te vorderen laag (inkopen)",
-          grootboekNummer: 1681,
-          btwSoort:        1,
-          btwPercentage:   9
+          grootboekNaam:   btwNaam,
+          grootboekNummer: btwNr,
+          btwSoort,
+          btwPercentage:   vatPct
         });
         currentSheetRow += 3;
       }
