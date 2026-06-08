@@ -1,12 +1,77 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { uploadInvoiceExcelExport, uploadZipExport } from "@/lib/export-builders";
+import { uploadInvoiceExcelExport, uploadZipExport, type InvoiceExportRow } from "@/lib/export-builders";
 import { jsonError, requireInternalApiKey } from "@/lib/http";
 import { applyCommonFilters, filtersFromRequest } from "@/lib/query";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { env } from "@/lib/env";
 
 export const runtime = "nodejs";
+
+type SupplierRow = { client_id: string; name: string; relatie_code: string | null };
+
+function normaliseName(value: string | null | undefined): string {
+  return (value ?? "").trim().toLowerCase();
+}
+
+function fuzzyMatch(supplierName: string, invoiceSupplier: string): boolean {
+  if (!supplierName || !invoiceSupplier) return false;
+  return supplierName.includes(invoiceSupplier) || invoiceSupplier.includes(supplierName);
+}
+
+/**
+ * Look up supplier.relatie_code (inkoop) or client.relatie_code (verkoop) per invoice,
+ * matched on phone_number → client_id and a substring-based supplier-name fuzzy match.
+ */
+async function attachRelatieCodes(rows: InvoiceExportRow[]): Promise<InvoiceExportRow[]> {
+  if (rows.length === 0) return rows;
+
+  const phoneNumbers = Array.from(new Set(rows.map((r) => r.phone_number).filter(Boolean)));
+  if (phoneNumbers.length === 0) return rows;
+
+  const { data: clientRows, error: clientErr } = await supabaseAdmin
+    .from("clients")
+    .select("id,phone_number,relatie_code")
+    .in("phone_number", phoneNumbers);
+  if (clientErr || !clientRows) return rows;
+
+  const phoneToClient = new Map<string, { id: string; relatie_code: string | null }>();
+  for (const c of clientRows) {
+    if (c.phone_number) phoneToClient.set(c.phone_number, { id: c.id, relatie_code: c.relatie_code ?? null });
+  }
+  const clientIds = Array.from(new Set(clientRows.map((c) => c.id)));
+  if (clientIds.length === 0) return rows;
+
+  const { data: supplierRows } = await supabaseAdmin
+    .from("suppliers")
+    .select("client_id,name,relatie_code")
+    .in("client_id", clientIds);
+
+  const suppliersByClient = new Map<string, SupplierRow[]>();
+  for (const s of (supplierRows ?? []) as SupplierRow[]) {
+    const list = suppliersByClient.get(s.client_id) ?? [];
+    list.push(s);
+    suppliersByClient.set(s.client_id, list);
+  }
+
+  return rows.map((row) => {
+    const client = phoneToClient.get(row.phone_number);
+    if (!client) return row;
+
+    const direction = row.invoice_direction ?? "inkoop";
+
+    if (direction === "verkoop") {
+      return { ...row, relatie_code: client.relatie_code };
+    }
+
+    const candidates = suppliersByClient.get(client.id) ?? [];
+    const target = normaliseName(row.supplier_name);
+    if (!target) return row;
+
+    const match = candidates.find((s) => fuzzyMatch(normaliseName(s.name), target));
+    return match?.relatie_code ? { ...row, relatie_code: match.relatie_code } : row;
+  });
+}
 
 const schema = z.object({
   phone:     z.string().optional().nullable(),
@@ -50,8 +115,10 @@ async function runInlineExport(req: NextRequest, jobId: string, body: z.infer<ty
     const { data, error } = await query.order("created_at", { ascending: false }).limit(10000);
     if (error) throw new Error(error.message);
 
+    const invoices = await attachRelatieCodes(data || []);
+
     return uploadInvoiceExcelExport({
-      invoices: data || [],
+      invoices,
       jobId,
       baseUrl: req.nextUrl.origin
     });

@@ -14,3 +14,22 @@ export type ExtractedInvoice = {
   transaction_type?: "inkoop" | "verkoop" | null;
   confidence?: number | null;
 };
+
+export interface Supplier {
+  id: string;
+  client_id: string;
+  name: string;
+  relatie_code: string | null;
+  address: string | null;
+  postcode: string | null;
+  city: string | null;
+  kvk: string | null;
+  btw_number: string | null;
+  iban: string | null;
+  email: string | null;
+  phone: string | null;
+  payment_days: number | null;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+}

@@ -14,6 +14,7 @@ const patchSchema = z.object({
   country:      z.string().length(2).optional(),
   btw_number:   z.string().max(50).optional().nullable(),
   kvk_number:   z.string().max(20).optional().nullable(),
+  relatie_code: z.string().max(50).optional().nullable(),
   notes:        z.string().max(2000).optional().nullable(),
 });
 

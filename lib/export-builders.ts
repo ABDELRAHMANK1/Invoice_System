@@ -21,6 +21,8 @@ export interface InvoiceExportRow {
   created_at: string;
   raw_extraction?: Record<string, unknown> | null;
   invoice_direction?: "inkoop" | "verkoop" | null;
+  /** RelatieCode resolved from the matching supplier (inkoop) or client (verkoop). Falls back to bookingId when null. */
+  relatie_code?: string | null;
 }
 
 // ── Dev helpers ───────────────────────────────────────────────────────────────
@@ -112,7 +114,7 @@ interface BookingRowParams {
   factuurNummerId: string;
   factuurNummer: string;
   relatieNaam: string | null;
-  relatieCode: number;
+  relatieCode: number | string;
   dagboekSoort: string;
   dagboekNaam: string;
   dagboekNummer: number;
@@ -208,7 +210,7 @@ export async function buildInvoiceExcelBuffer(invoices: InvoiceExportRow[]): Pro
       factuurNummerId: inv.id,
       factuurNummer:   inv.invoice_number,
       relatieNaam:     inv.client_name || null,
-      relatieCode:     bookingId
+      relatieCode:     inv.relatie_code && inv.relatie_code.trim() !== "" ? inv.relatie_code : bookingId
     };
 
     const regel0Row = currentSheetRow;

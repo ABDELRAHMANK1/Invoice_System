@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { Icon, I } from "@/app/components/Icon";
 import { useToast } from "@/app/components/Toast";
 
@@ -349,6 +350,9 @@ export default function ClientsPage() {
                 {c.kvk_number   && <div className="client-card-tag">KvK {c.kvk_number}</div>}
               </div>
               <div className="client-card-actions">
+                <Link href={`/clients/${c.id}`} className="act" title="Open details">
+                  <Icon d={I.chevR} size={14} />
+                </Link>
                 <button className="act" title="Edit" onClick={() => openEdit(c)}>
                   <Icon d={I.cog} size={14} />
                 </button>
