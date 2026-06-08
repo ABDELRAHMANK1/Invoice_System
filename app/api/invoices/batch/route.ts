@@ -10,6 +10,7 @@ const invoiceSchema = z.object({
   phone_number:     z.string().min(5),
   invoice_number:   z.string().min(1),
   client_name:      z.string().optional().nullable(),
+  supplier_name:    z.string().optional().nullable(),
   date:             z.string().optional().nullable(),
   total_amount:     z.number().optional().nullable(),
   currency:         z.string().length(3).optional().nullable(),
