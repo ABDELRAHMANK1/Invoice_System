@@ -8,6 +8,7 @@ const client = env.openAiApiKey ? new OpenAI({ apiKey: env.openAiApiKey }) : nul
 function emptyResult(): ExtractedInvoice {
   return {
     client_name: null,
+    supplier_name: null,
     invoice_number: null,
     date: null,
     total_amount: null,
@@ -35,6 +36,7 @@ function parseJsonArray(text: string): ExtractedInvoice[] {
     const txType = item.transaction_type === "verkoop" ? "verkoop" : "inkoop";
     return {
       client_name: item.client_name ?? null,
+      supplier_name: item.supplier_name ?? null,
       invoice_number: item.invoice_number ?? null,
       date: item.date ?? null,
       total_amount: typeof item.total_amount === "number" ? item.total_amount : item.total_amount ? Number(item.total_amount) : null,
@@ -71,7 +73,8 @@ Return ONLY a valid JSON array with exactly one object per input file.
 Use null for any field you cannot find or are not confident about.
 
 Required JSON keys for each object:
-  client_name       – The name of the company that ISSUED this invoice (the supplier/vendor). Look at the TOP of the document — the letterhead, header, logo area, or the most prominent company name. Do NOT use the "Naam:", "Bill To:", "Factuur aan:", or "Klant:" field — those refer to the RECIPIENT of the invoice, not the supplier. Preserve original script (Arabic or Latin). Do not translate. Examples: header says "Nema Food B.V.", Naam says "Roni Market" → client_name = "Nema Food B.V."; header says "RAJEH FOOD", under Factuur says "Roni Market" → client_name = "RAJEH FOOD".
+  client_name       – The name of the company that RECEIVED this invoice (the buyer/client). Look at the LEFT side or bottom-left of the document — under "Factuur aan:", "Bill To:", "Naam:", "Klant:", "Debiteur:", or any address block that shows who the invoice was sent TO. This is Oranje's client. Preserve original script (Arabic or Latin). Do not translate. Examples: header says "ATAPACK Cash & Carry B.V.", left side says "Fruitoase" → client_name = "Fruitoase"; header says "Nema Food B.V.", Naam says "Roni Market" → client_name = "Roni Market".
+  supplier_name     – The name of the company that ISSUED this invoice (the vendor/supplier). Look at the TOP of the document — the letterhead, header, logo area, or the most prominent company name at the top-right. Preserve original script. Do not translate. Examples: header says "ATAPACK Cash & Carry B.V." → supplier_name = "ATAPACK Cash & Carry B.V."; header says "Nema Food B.V." → supplier_name = "Nema Food B.V.".
   invoice_number    – The invoice or document number (رقم الفاتورة / factuurnummer / invoice no). Keep as string.
   date              – Invoice date in ISO format YYYY-MM-DD.
   total_amount      – Grand total as a plain number INCLUDING tax/VAT/BTW/ضريبة. No currency symbols.

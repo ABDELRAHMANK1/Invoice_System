@@ -5,6 +5,7 @@ export type InvoiceDirection = "inkoop" | "verkoop";
 
 export type ExtractedInvoice = {
   client_name: string | null;
+  supplier_name: string | null;
   invoice_number: string | null;
   date: string | null;
   total_amount: number | null;
