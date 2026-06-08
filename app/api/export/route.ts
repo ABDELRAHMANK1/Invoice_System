@@ -54,31 +54,47 @@ function scoreMatch(supplierName: string, invoiceSupplier: string): number {
 
 /**
  * Look up supplier.relatie_code (inkoop) or client.relatie_code (verkoop) per invoice,
- * matched on phone_number → client_id and a substring-based supplier-name fuzzy match.
+ * matched on phone_number → client_id and a token-based supplier-name fuzzy match.
  */
 async function attachRelatieCodes(rows: InvoiceExportRow[]): Promise<InvoiceExportRow[]> {
+  console.log(`[export.relatie] === attachRelatieCodes START === rows=${rows.length}`);
   if (rows.length === 0) return rows;
 
   const phoneNumbers = Array.from(new Set(rows.map((r) => r.phone_number).filter(Boolean)));
-  if (phoneNumbers.length === 0) return rows;
+  console.log(`[export.relatie] phone_numbers from invoices (${phoneNumbers.length}): ${JSON.stringify(phoneNumbers)}`);
+  if (phoneNumbers.length === 0) {
+    console.log("[export.relatie] no phone numbers on invoices — skipping lookup");
+    return rows;
+  }
 
   const { data: clientRows, error: clientErr } = await supabaseAdmin
     .from("clients")
     .select("id,phone_number,relatie_code")
     .in("phone_number", phoneNumbers);
-  if (clientErr || !clientRows) return rows;
+  if (clientErr) {
+    console.log(`[export.relatie] CLIENT QUERY ERROR: ${clientErr.message}`);
+    return rows;
+  }
+  if (!clientRows || clientRows.length === 0) {
+    console.log(`[export.relatie] NO CLIENTS matched phones ${JSON.stringify(phoneNumbers)} — supplier lookup will be empty`);
+    return rows;
+  }
+  console.log(`[export.relatie] resolved clients (${clientRows.length}): ${JSON.stringify(clientRows.map((c) => ({ id: c.id, phone: c.phone_number, code: c.relatie_code })))}`);
 
   const phoneToClient = new Map<string, { id: string; relatie_code: string | null }>();
   for (const c of clientRows) {
     if (c.phone_number) phoneToClient.set(c.phone_number, { id: c.id, relatie_code: c.relatie_code ?? null });
   }
   const clientIds = Array.from(new Set(clientRows.map((c) => c.id)));
-  if (clientIds.length === 0) return rows;
 
-  const { data: supplierRows } = await supabaseAdmin
+  const { data: supplierRows, error: supplierErr } = await supabaseAdmin
     .from("suppliers")
     .select("client_id,name,relatie_code")
     .in("client_id", clientIds);
+  if (supplierErr) {
+    console.log(`[export.relatie] SUPPLIER QUERY ERROR: ${supplierErr.message}`);
+  }
+  console.log(`[export.relatie] supplier rows fetched: ${(supplierRows ?? []).length} for client_ids=${JSON.stringify(clientIds)}`);
 
   const suppliersByClient = new Map<string, SupplierRow[]>();
   for (const s of (supplierRows ?? []) as SupplierRow[]) {
@@ -87,13 +103,26 @@ async function attachRelatieCodes(rows: InvoiceExportRow[]): Promise<InvoiceExpo
     suppliersByClient.set(s.client_id, list);
   }
 
+  for (const cid of clientIds) {
+    const list = suppliersByClient.get(cid);
+    if (!list || list.length === 0) {
+      console.log(`[export.relatie] NO SUPPLIERS FOUND for client_id: ${cid}`);
+    } else {
+      console.log(`[export.relatie] client_id=${cid} has ${list.length} suppliers: ${JSON.stringify(list.map((s) => ({ name: s.name, code: s.relatie_code })))}`);
+    }
+  }
+
   return rows.map((row) => {
     const client = phoneToClient.get(row.phone_number);
-    if (!client) return row;
+    if (!client) {
+      console.log(`[export.relatie] inv=${row.invoice_number} phone="${row.phone_number}" — no client mapped, skipping`);
+      return row;
+    }
 
     const direction = row.invoice_direction ?? "inkoop";
 
     if (direction === "verkoop") {
+      console.log(`[export.relatie] inv=${row.invoice_number} verkoop → client_code=${client.relatie_code ?? "<null>"}`);
       return { ...row, relatie_code: client.relatie_code };
     }
 
@@ -104,15 +133,17 @@ async function attachRelatieCodes(rows: InvoiceExportRow[]): Promise<InvoiceExpo
     }
 
     let best: { supplier: SupplierRow; score: number } | null = null;
+    const scores: Array<{ name: string; code: string | null; score: number }> = [];
     for (const s of candidates) {
       const score = scoreMatch(s.name, row.supplier_name);
+      scores.push({ name: s.name, code: s.relatie_code, score });
       if (score > 0 && (best === null || score > best.score)) {
         best = { supplier: s, score };
       }
     }
 
     if (!best) {
-      console.log(`[export.relatie] inv=${row.invoice_number} supplier_name="${row.supplier_name}" match=NONE (candidates=${candidates.length})`);
+      console.log(`[export.relatie] inv=${row.invoice_number} supplier_name="${row.supplier_name}" client_id=${client.id} match=NONE  scored=${JSON.stringify(scores)}`);
       return row;
     }
 
