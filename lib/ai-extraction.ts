@@ -79,7 +79,16 @@ Required JSON keys for each object:
   date              – Invoice date in ISO format YYYY-MM-DD.
   total_amount      – Grand total as a plain number INCLUDING tax/VAT/BTW/ضريبة. No currency symbols.
   currency          – ISO 4217 three-letter code (SAR, AED, EGP, EUR, USD, GBP …). Detect from symbol or context.
-  vat_rate          – VAT/BTW/ضريبة القيمة المضافة percentage as integer: exactly 21, 9, or 0. Use dominant rate. Default 21.
+  vat_rate          – VAT/BTW/ضريبة القيمة المضافة percentage as integer: exactly 21, 9, or 0.
+                       Use the rate that has an ACTUAL non-zero tax amount. If the invoice shows multiple BTW rows (0%, 9%, 21%), pick the one where the BTW bedrag (tax amount) is greater than zero.
+                       If multiple rates have non-zero amounts, pick the DOMINANT one (highest total base amount).
+                       If all rates show zero, use the rate explicitly applied to line items.
+                       Default 21 only when you truly cannot determine the rate.
+                       Examples:
+                       - BTW 9% = €62,37, BTW 21% = €0,00 → vat_rate = 9
+                       - BTW 21% = €150,00, BTW 9% = €0,00 → vat_rate = 21
+                       - BTW 21% = €50,00, BTW 9% = €20,00 → vat_rate = 21 (dominant)
+                       - All BTW rows = €0,00, line items show "9" in BTW column → vat_rate = 9
   transaction_type  – Almost always "inkoop". Only set to "verkoop" if the document explicitly says "Verkoopfactuur" or clearly shows it is a sales invoice issued BY the user's own company. Default "inkoop".
   confidence        – Your confidence 0.0–1.0 that the extraction is correct.
 

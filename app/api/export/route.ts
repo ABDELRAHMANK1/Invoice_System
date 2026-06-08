@@ -41,7 +41,7 @@ async function runInlineExport(req: NextRequest, jobId: string, body: z.infer<ty
   if (body.type === "excel") {
     let query = supabaseAdmin
       .from("invoices")
-      .select("id,invoice_number,client_name,phone_number,date,total_amount,currency,file_url,created_at,status,raw_extraction,invoice_direction");
+      .select("id,invoice_number,client_name,supplier_name,phone_number,date,total_amount,currency,file_url,created_at,status,raw_extraction,invoice_direction");
     if (body.ids && body.ids.length > 0) {
       query = query.in("id", body.ids);
     } else {
