@@ -183,7 +183,7 @@ const INKOOP_COLS: { header: string; key: string; width: number }[] = [
   { header: "Saldo",                     key: "saldo",                     width: 11 },
   { header: "BtwSoort",                  key: "btwSoort",                  width: 10 },
   { header: "Factuurnummer",             key: "factuurnummer",             width: 18 },
-  { header: "Dagboek",                   key: "dagboek",                   width: 10 },
+  { header: "DagboekNummer",             key: "dagboek",                   width: 10 },
   { header: "Dagboeksoort",              key: "dagboeksoort",              width: 18 },
   { header: "Boekstuk",                  key: "boekstuk",                  width: 10 },
   { header: "Gewijzigd door accountant", key: "gewijzigdDoorAccountant",   width: 26 },

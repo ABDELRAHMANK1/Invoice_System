@@ -167,7 +167,7 @@ describe("buildInvoiceExcelBuffer — workbook structure", () => {
     expect(titles).toEqual([
       "BookingId", "Dagboeknaam", "Datum", "Regel", "Omschrijving", "GrootboekNummer",
       "Grootboeknaam", "Debet", "Credit", "Saldo", "BtwSoort",
-      "Factuurnummer", "Dagboek", "Dagboeksoort", "Boekstuk",
+      "Factuurnummer", "DagboekNummer", "Dagboeksoort", "Boekstuk",
       "Gewijzigd door accountant", "Relatiecode", "Relatienaam",
       "Grootboekrekening type", "Grootboek functie", "Gemarkeerd",
       "Bijlagen", "Kostenplaats", "Kostenplaatsnaam", "Bankomschrijving",
