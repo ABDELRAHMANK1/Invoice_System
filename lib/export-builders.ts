@@ -171,16 +171,17 @@ function addBookingRow(sheet: ExcelJS.Worksheet, params: BookingRowParams): Exce
 //   Regel 0: 1600 Crediteuren                     Credit=total_amount
 
 const INKOOP_COLS: { header: string; key: string; width: number }[] = [
+  { header: "BookingId",                 key: "bookingId",                 width: 11 },
   { header: "Dagboeknaam",               key: "dagboeknaam",               width: 14 },
   { header: "Datum",                     key: "datum",                     width: 12 },
   { header: "Regel",                     key: "regel",                     width: 7 },
   { header: "Omschrijving",              key: "omschrijving",              width: 32 },
-  { header: "Grootboek",                 key: "grootboek",                 width: 10 },
+  { header: "GrootboekNummer",           key: "grootboek",                 width: 14 },
   { header: "Grootboeknaam",             key: "grootboeknaam",             width: 32 },
   { header: "Debet",                     key: "debet",                     width: 11 },
   { header: "Credit",                    key: "credit",                    width: 11 },
   { header: "Saldo",                     key: "saldo",                     width: 11 },
-  { header: "Btw-soort",                 key: "btwSoort",                  width: 10 },
+  { header: "BtwSoort",                  key: "btwSoort",                  width: 10 },
   { header: "Factuurnummer",             key: "factuurnummer",             width: 18 },
   { header: "Dagboek",                   key: "dagboek",                   width: 10 },
   { header: "Dagboeksoort",              key: "dagboeksoort",              width: 18 },
@@ -241,19 +242,20 @@ interface InkoopRowSpec {
   grootboeknaam: string;
   debet: number;
   credit: number;
-  btwSoort: "Laag" | "Hoog" | "Geen";
+  /** Snelstart BtwSoort code: 0 = Geen, 1 = Laag, 2 = Hoog */
+  btwSoort: 0 | 1 | 2;
   grootboekrekeningType: "Balans" | "Verlies & Winst";
   grootboekFunctie: string;
 }
 
 function inkoopRowSpecs(bd: VatBreakdownLike, totalIncl: number): InkoopRowSpec[] {
   return [
-    { regel: 5, grootboek: 1679, grootboeknaam: "Btw te vorderen laag (inkopen)", debet: round2(bd.vat_9),    credit: 0,                  btwSoort: "Laag", grootboekrekeningType: "Balans",          grootboekFunctie: "BtwTeVorderenLaag" },
-    { regel: 4, grootboek: 1680, grootboeknaam: "Btw te vorderen hoog (inkopen)", debet: round2(bd.vat_21),   credit: 0,                  btwSoort: "Hoog", grootboekrekeningType: "Balans",          grootboekFunctie: "BtwTeVorderenHoog" },
-    { regel: 3, grootboek: 7001, grootboeknaam: "Inkopen laag tarief",            debet: round2(bd.net_9),    credit: 0,                  btwSoort: "Laag", grootboekrekeningType: "Verlies & Winst", grootboekFunctie: "InkopenKostenLaag" },
-    { regel: 2, grootboek: 3090, grootboeknaam: "Emballage",                      debet: round2(bd.emballage),credit: 0,                  btwSoort: "Geen", grootboekrekeningType: "Balans",          grootboekFunctie: "Diversen" },
-    { regel: 1, grootboek: 7002, grootboeknaam: "Inkopen hoog tarief",            debet: round2(bd.net_21),   credit: 0,                  btwSoort: "Hoog", grootboekrekeningType: "Verlies & Winst", grootboekFunctie: "InkopenKostenHoog" },
-    { regel: 0, grootboek: 1600, grootboeknaam: "Crediteuren",                    debet: 0,                   credit: round2(totalIncl),  btwSoort: "Geen", grootboekrekeningType: "Balans",          grootboekFunctie: "DagboekInkoop" },
+    { regel: 5, grootboek: 1679, grootboeknaam: "Btw te vorderen laag (inkopen)", debet: round2(bd.vat_9),    credit: 0,                  btwSoort: 1, grootboekrekeningType: "Balans",          grootboekFunctie: "BtwTeVorderenLaag" },
+    { regel: 4, grootboek: 1680, grootboeknaam: "Btw te vorderen hoog (inkopen)", debet: round2(bd.vat_21),   credit: 0,                  btwSoort: 2, grootboekrekeningType: "Balans",          grootboekFunctie: "BtwTeVorderenHoog" },
+    { regel: 3, grootboek: 7001, grootboeknaam: "Inkopen laag tarief",            debet: round2(bd.net_9),    credit: 0,                  btwSoort: 1, grootboekrekeningType: "Verlies & Winst", grootboekFunctie: "InkopenKostenLaag" },
+    { regel: 2, grootboek: 3090, grootboeknaam: "Emballage",                      debet: round2(bd.emballage),credit: 0,                  btwSoort: 0, grootboekrekeningType: "Balans",          grootboekFunctie: "Diversen" },
+    { regel: 1, grootboek: 7002, grootboeknaam: "Inkopen hoog tarief",            debet: round2(bd.net_21),   credit: 0,                  btwSoort: 2, grootboekrekeningType: "Verlies & Winst", grootboekFunctie: "InkopenKostenHoog" },
+    { regel: 0, grootboek: 1600, grootboeknaam: "Crediteuren",                    debet: 0,                   credit: round2(totalIncl),  btwSoort: 0, grootboekrekeningType: "Balans",          grootboekFunctie: "DagboekInkoop" },
   ];
 }
 
@@ -278,6 +280,7 @@ function writeInkoopSheet(workbook: ExcelJS.Workbook, invoices: InvoiceExportRow
 
     inkoopRowSpecs(bd, totalIncl).forEach((spec) => {
       const row = sheet.addRow({
+        bookingId:               boekstuk,
         dagboeknaam:             "Crediteuren",
         datum:                   datum,
         regel:                   spec.regel,
@@ -304,8 +307,8 @@ function writeInkoopSheet(workbook: ExcelJS.Workbook, invoices: InvoiceExportRow
         bankomschrijving:        null,
       });
 
-      if (datum) row.getCell(2).numFmt = "dd-mm-yyyy";
-      for (const numCol of [7, 8, 9]) row.getCell(numCol).numFmt = "#,##0.00";
+      if (datum) row.getCell(3).numFmt = "dd-mm-yyyy";
+      for (const numCol of [8, 9, 10]) row.getCell(numCol).numFmt = "#,##0.00";
 
       row.eachCell({ includeEmpty: false }, (cell) => {
         cell.font = BASE_FONT;

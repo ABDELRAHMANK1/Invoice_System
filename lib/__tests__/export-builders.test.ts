@@ -39,28 +39,29 @@ const V = {
 
 // ── Inkoop (Inkoop) column reference — matches INKOOP_COLS order ──────────
 const I = {
-  dagboeknaam:             1,
-  datum:                   2,
-  regel:                   3,
-  omschrijving:            4,
-  grootboek:               5,
-  grootboeknaam:           6,
-  debet:                   7,
-  credit:                  8,
-  saldo:                   9,
-  btwSoort:               10,
-  factuurnummer:          11,
-  dagboek:                12,
-  dagboeksoort:           13,
-  boekstuk:               14,
-  gewijzigdDoorAccountant:15,
-  relatiecode:            16,
-  relatienaam:            17,
-  grootboekrekeningType:  18,
-  grootboekFunctie:       19,
-  gemarkeerd:             20,
-  bijlagen:               21,
-  kostenplaats:           22,
+  bookingId:               1,
+  dagboeknaam:             2,
+  datum:                   3,
+  regel:                   4,
+  omschrijving:            5,
+  grootboek:               6,
+  grootboeknaam:           7,
+  debet:                   8,
+  credit:                  9,
+  saldo:                  10,
+  btwSoort:               11,
+  factuurnummer:          12,
+  dagboek:                13,
+  dagboeksoort:           14,
+  boekstuk:               15,
+  gewijzigdDoorAccountant:16,
+  relatiecode:            17,
+  relatienaam:            18,
+  grootboekrekeningType:  19,
+  grootboekFunctie:       20,
+  gemarkeerd:             21,
+  bijlagen:               22,
+  kostenplaats:           23,
 } as const;
 
 async function loadWorkbook(invoices: Parameters<typeof buildInvoiceExcelBuffer>[0]) {
@@ -91,6 +92,7 @@ function verkoopRow(sheet: ExcelJS.Worksheet, rowNum: number) {
 function inkoopRow(sheet: ExcelJS.Worksheet, rowNum: number) {
   const row = sheet.getRow(rowNum);
   return {
+    bookingId:             row.getCell(I.bookingId).value,
     dagboeknaam:           row.getCell(I.dagboeknaam).value,
     datum:                 row.getCell(I.datum).value,
     regel:                 row.getCell(I.regel).value,
@@ -157,14 +159,14 @@ describe("buildInvoiceExcelBuffer — workbook structure", () => {
     ]);
   });
 
-  it("Inkoop sheet emits all 24 native-Snelstart columns in the header row", async () => {
+  it("Inkoop sheet emits all 25 native-Snelstart columns in the header row", async () => {
     const wb = await loadWorkbook([sampleInvoiceInkoop21]);
     const header = wb.getWorksheet("Inkoop")!.getRow(1);
     const titles: string[] = [];
     header.eachCell((cell) => titles.push(String(cell.value)));
     expect(titles).toEqual([
-      "Dagboeknaam", "Datum", "Regel", "Omschrijving", "Grootboek",
-      "Grootboeknaam", "Debet", "Credit", "Saldo", "Btw-soort",
+      "BookingId", "Dagboeknaam", "Datum", "Regel", "Omschrijving", "GrootboekNummer",
+      "Grootboeknaam", "Debet", "Credit", "Saldo", "BtwSoort",
       "Factuurnummer", "Dagboek", "Dagboeksoort", "Boekstuk",
       "Gewijzigd door accountant", "Relatiecode", "Relatienaam",
       "Grootboekrekening type", "Grootboek functie", "Gemarkeerd",
@@ -268,12 +270,12 @@ describe("buildInvoiceExcelBuffer — INKOOP (purchase) native Snelstart format"
     const r1 = inkoopRow(sheet, 6); // Regel 1 — Inkoop hoog
     const r0 = inkoopRow(sheet, 7); // Regel 0 — Crediteuren
 
-    expect(r5).toMatchObject({ grootboek: 1679, grootboeknaam: "Btw te vorderen laag (inkopen)", debet: 0,   btwSoort: "Laag", grootboekrekeningType: "Balans",          grootboekFunctie: "BtwTeVorderenLaag" });
-    expect(r4).toMatchObject({ grootboek: 1680, grootboeknaam: "Btw te vorderen hoog (inkopen)", debet: 21,  btwSoort: "Hoog", grootboekrekeningType: "Balans",          grootboekFunctie: "BtwTeVorderenHoog" });
-    expect(r3).toMatchObject({ grootboek: 7001, grootboeknaam: "Inkopen laag tarief",            debet: 0,   btwSoort: "Laag", grootboekrekeningType: "Verlies & Winst", grootboekFunctie: "InkopenKostenLaag" });
-    expect(r2).toMatchObject({ grootboek: 3090, grootboeknaam: "Emballage",                      debet: 0,   btwSoort: "Geen", grootboekrekeningType: "Balans",          grootboekFunctie: "Diversen" });
-    expect(r1).toMatchObject({ grootboek: 7002, grootboeknaam: "Inkopen hoog tarief",            debet: 100, btwSoort: "Hoog", grootboekrekeningType: "Verlies & Winst", grootboekFunctie: "InkopenKostenHoog" });
-    expect(r0).toMatchObject({ grootboek: 1600, grootboeknaam: "Crediteuren",                    debet: 0, credit: 121, btwSoort: "Geen", grootboekrekeningType: "Balans", grootboekFunctie: "DagboekInkoop" });
+    expect(r5).toMatchObject({ grootboek: 1679, grootboeknaam: "Btw te vorderen laag (inkopen)", debet: 0,   btwSoort: 1, grootboekrekeningType: "Balans",          grootboekFunctie: "BtwTeVorderenLaag" });
+    expect(r4).toMatchObject({ grootboek: 1680, grootboeknaam: "Btw te vorderen hoog (inkopen)", debet: 21,  btwSoort: 2, grootboekrekeningType: "Balans",          grootboekFunctie: "BtwTeVorderenHoog" });
+    expect(r3).toMatchObject({ grootboek: 7001, grootboeknaam: "Inkopen laag tarief",            debet: 0,   btwSoort: 1, grootboekrekeningType: "Verlies & Winst", grootboekFunctie: "InkopenKostenLaag" });
+    expect(r2).toMatchObject({ grootboek: 3090, grootboeknaam: "Emballage",                      debet: 0,   btwSoort: 0, grootboekrekeningType: "Balans",          grootboekFunctie: "Diversen" });
+    expect(r1).toMatchObject({ grootboek: 7002, grootboeknaam: "Inkopen hoog tarief",            debet: 100, btwSoort: 2, grootboekrekeningType: "Verlies & Winst", grootboekFunctie: "InkopenKostenHoog" });
+    expect(r0).toMatchObject({ grootboek: 1600, grootboeknaam: "Crediteuren",                    debet: 0, credit: 121, btwSoort: 0, grootboekrekeningType: "Balans", grootboekFunctie: "DagboekInkoop" });
     expect(r0.saldo).toBe(-121);
   });
 
@@ -339,7 +341,7 @@ describe("buildInvoiceExcelBuffer — INKOOP (purchase) native Snelstart format"
     };
     const wb = await loadWorkbook([withEmballage]);
     const sheet = wb.getWorksheet("Inkoop")!;
-    expect(inkoopRow(sheet, 5)).toMatchObject({ grootboek: 3090, grootboeknaam: "Emballage", debet: 10.80 });
+    expect(inkoopRow(sheet, 5)).toMatchObject({ grootboek: 3090, grootboeknaam: "Emballage", debet: 10.80, btwSoort: 0 });
   });
 
   it("propagates Factuurnummer, Relatienaam, Dagboeknaam and Boekstuk to every row of an invoice", async () => {
