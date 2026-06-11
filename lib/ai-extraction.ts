@@ -89,33 +89,46 @@ Required JSON keys for each object:
   total_amount      – Grand total as a plain number INCLUDING tax/VAT/BTW/ضريبة. No currency symbols.
   currency          – ISO 4217 three-letter code (SAR, AED, EGP, EUR, USD, GBP …). Detect from symbol or context.
   vat_rate          – Dominant VAT rate as integer (21, 9, or 0). The rate with the largest non-zero tax amount. Keep for backwards compatibility.
-  vat_breakdown     – An object with the FULL BTW breakdown of the invoice. Most Dutch invoices have a BTW table near the bottom with one row per rate (typically labelled "Btw%", "Bedrag" or "Grondslag", and "B.T.W." or "BTW bedrag"). YOU MUST READ EVERY ROW OF THAT TABLE — do not stop after the first non-zero row. All values are plain numbers (no currency symbols), use 0 when that rate is not present.
+  vat_breakdown     – TRANSCRIBE EVERY ROW of the invoice's BTW/VAT summary table into this object. This is a transcription task, not a selection task — vat_rate above picks ONE dominant rate, vat_breakdown captures ALL of them. The two fields are INDEPENDENT. Do NOT zero out the smaller rate just because another rate has a larger amount; do NOT collapse the table into a single rate.
 
-                      Field mapping (one BTW table row → one pair of fields):
-                        • The Btw%=21 row  → "net_21" = Bedrag/Grondslag,  "vat_21" = B.T.W.
-                        • The Btw%=9  row  → "net_9"  = Bedrag/Grondslag,  "vat_9"  = B.T.W.
-                        • The Btw%=0  row  with B.T.W.=0:
-                            - If its Bedrag > 0, that line represents emballage / statiegeld / fust → put the Bedrag into "emballage", leave "net_0" = 0.
-                            - Otherwise (or if there is a separate "verlegd"/"vrijgesteld"/"intracommunautair" line) → put it into "net_0".
-                        • A separately labelled "Fust" / "Emballage" / "Statiegeld" total → "emballage".
+                      ★ THE #1 MISTAKE (do not make it):
+                      Given an invoice whose BTW table has rows for both 21% and 9%, returning {net_21:0, vat_21:0, net_9:X, vat_9:Y} because 9% has the larger amounts. This is WRONG. Both pairs must be filled.
 
-                      Shape:
-                      {
-                        "net_21": <Bedrag at 21%>,
-                        "vat_21": <B.T.W. at 21%>,
-                        "net_9":  <Bedrag at 9%>,
-                        "vat_9":  <B.T.W. at 9%>,
-                        "net_0":  <0% / vrijgesteld / verlegd base>,
-                        "emballage": <emballage / statiegeld / fust amount>
-                      }
+                      ★ PROCEDURE (follow in order):
+                      Step 1. Locate the BTW/VAT summary block. On Dutch invoices it sits near the bottom (often bottom-left) above the grand total, with columns "Btw %" / "Bedrag" (or "Grondslag") / "B.T.W." (or "BTW bedrag"). It has 1–3 rows, one per rate. On photo/JPG/PNG invoices read carefully — numbers may be small.
 
-                      Examples:
-                      - BTW table: 9% → grondslag €693.01, bedrag €62.37; nothing at 21% → {"net_21":0,"vat_21":0,"net_9":693.01,"vat_9":62.37,"net_0":0,"emballage":0}
-                      - BTW table: 21% → grondslag €185.17, bedrag €38.89 → {"net_21":185.17,"vat_21":38.89,"net_9":0,"vat_9":0,"net_0":0,"emballage":0}
-                      - BTW table: 0% → 10.80/0.00, 9% → 247.81/22.30, 21% → 73.55/15.44 → {"net_21":73.55,"vat_21":15.44,"net_9":247.81,"vat_9":22.30,"net_0":0,"emballage":10.80}
-                      - BTW table has both rates plus a separate "Fust €10.80" line → fill all rate fields AND emballage=10.80.
+                      Step 2. For EACH row of that table (do not skip any, even if its B.T.W. is 0):
+                        - 21% row → net_21 = Bedrag, vat_21 = B.T.W.
+                        - 9%  row → net_9  = Bedrag, vat_9  = B.T.W.
+                        - 0%  row:
+                            · Bedrag > 0  → emballage = that Bedrag (Dutch invoices use the 0% row for fust/statiegeld/emballage). Leave net_0 = 0.
+                            · Bedrag = 0  → leave both net_0 and emballage = 0 for this row.
 
-                      Validation: net_21 + vat_21 + net_9 + vat_9 + net_0 + emballage should equal total_amount (small rounding differences are OK). If your numbers do not add up, re-read the BTW table — you probably missed a row.
+                      Step 3. Scan the rest of the invoice for:
+                        - A separately labelled "Fust" / "Emballage" / "Statiegeld" / "Leeggoed" total → if not already in emballage, add it.
+                        - A "vrijgesteld" / "verlegd" / "intracommunautair" base outside the BTW table → put it in net_0.
+
+                      Step 4. Sanity check: net_21 + vat_21 + net_9 + vat_9 + net_0 + emballage must equal total_amount within a few cents. If it doesn't, you almost certainly missed a row of the BTW table — go back to step 1 and re-read it before answering.
+
+                      Shape (plain numbers only, no currency symbols, use 0 when absent):
+                      { "net_21": <num>, "vat_21": <num>, "net_9": <num>, "vat_9": <num>, "net_0": <num>, "emballage": <num> }
+
+                      ★ WORKED EXAMPLE — the failure case to memorise (Mix Food, total €369.91):
+                      BTW table on the invoice reads:
+                          0%   | Bedrag 10.80   | B.T.W. 0.00
+                          9%   | Bedrag 247.81  | B.T.W. 22.30
+                          21%  | Bedrag 73.55   | B.T.W. 15.44
+                      CORRECT output:
+                          {"net_21":73.55, "vat_21":15.44, "net_9":247.81, "vat_9":22.30, "net_0":0, "emballage":10.80}
+                      Sum check: 73.55 + 15.44 + 247.81 + 22.30 + 0 + 10.80 = 369.90 ≈ 369.91. Good.
+                      INCORRECT output (the bug — do NOT do this):
+                          {"net_21":0, "vat_21":0, "net_9":247.81, "vat_9":22.30, "net_0":0, "emballage":0}
+                      Sum check: 270.11 ≠ 369.91 → you missed the 21% row AND the 0% emballage row.
+
+                      Other examples:
+                      - Single 9%: grondslag €693.01, bedrag €62.37 → {"net_21":0,"vat_21":0,"net_9":693.01,"vat_9":62.37,"net_0":0,"emballage":0}
+                      - Single 21%: grondslag €185.17, bedrag €38.89 → {"net_21":185.17,"vat_21":38.89,"net_9":0,"vat_9":0,"net_0":0,"emballage":0}
+                      - Both rates + separate "Fust €10.80" line outside the BTW table → fill all rate fields AND emballage=10.80.
   transaction_type  – Almost always "inkoop". Only set to "verkoop" if the document explicitly says "Verkoopfactuur" or clearly shows it is a sales invoice issued BY the user's own company. Default "inkoop".
   confidence        – Your confidence 0.0–1.0 that the extraction is correct.
 
