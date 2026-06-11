@@ -50,6 +50,16 @@ function parseJsonArray(text: string): ExtractedInvoice[] {
       // to the vat_rate + total_amount synthesis instead of writing six zeros.
       const allZero = bd.net_21 === 0 && bd.vat_21 === 0 && bd.net_9 === 0 && bd.vat_9 === 0 && bd.net_0 === 0 && bd.emballage === 0;
       vatBreakdown = allZero ? null : bd;
+
+      // Diagnostic: warn when the breakdown sum diverges from the stated total
+      // by more than a euro. Most often this means the model missed a BTW row.
+      if (vatBreakdown && typeof item.total_amount === "number" && item.total_amount > 0) {
+        const bdSum = bd.net_21 + bd.vat_21 + bd.net_9 + bd.vat_9 + bd.net_0 + bd.emballage;
+        const diff = Math.abs(bdSum - item.total_amount);
+        if (diff > 1) {
+          console.warn(`[ai-extraction] vat_breakdown sum (${bdSum.toFixed(2)}) ≠ total_amount (${item.total_amount}) for invoice ${item.invoice_number ?? "<unknown>"} — diff ${diff.toFixed(2)}. The model likely missed a BTW row.`, bd);
+        }
+      }
     }
 
     return {
@@ -108,6 +118,13 @@ Required JSON keys for each object:
   vat_rate          – Dominant VAT rate as integer (21, 9, or 0). The rate with the largest non-zero tax amount. Keep for backwards compatibility.
   vat_breakdown     – TRANSCRIBE EVERY ROW of the invoice's BTW/VAT summary table into this object. This is a transcription task, not a selection task — vat_rate above picks ONE dominant rate, vat_breakdown captures ALL of them. The two fields are INDEPENDENT. Do NOT zero out the smaller rate just because another rate has a larger amount; do NOT collapse the table into a single rate.
 
+                      ★ INVOICE TYPES YOU WILL ENCOUNTER (any of these is normal — none is exceptional):
+                        a. Only 9% — typical food invoice. Fill only net_9/vat_9; leave everything else 0.
+                        b. Only 21% — typical non-food (packaging, services). Fill only net_21/vat_21; leave everything else 0.
+                        c. Both 9% AND 21% — VERY COMMON in food wholesale (mixed goods). BOTH rate pairs must be filled. This is the failure case you've been getting wrong; assume mixed until you've actually counted the rows.
+                        d. 9% / 21% / 0% all three — wholesale with emballage. Fill all three buckets.
+                      Before writing any number, look at the BTW table and count how many rows it has. The number of rows equals the number of rate pairs you must fill.
+
                       ★ NO-DATA CASE: If you cannot find ANY non-zero value for vat_breakdown — i.e. you would otherwise output every field as 0 — return null for the whole object instead. A null vat_breakdown is the explicit "I could not read the BTW table" signal; an all-zero object is wrong because it suppresses the export builder's fallback (which would otherwise synthesise the breakdown from vat_rate + total_amount). Use null only when you genuinely cannot read the breakdown; if even one rate's Bedrag or B.T.W. is non-zero, return the object.
 
                       ★ THE #1 MISTAKE (do not make it):
@@ -116,6 +133,8 @@ Required JSON keys for each object:
                       ★ PROCEDURE (follow in order):
                       Step 1. Locate the BTW/VAT summary block. On Dutch invoices it sits near the bottom (often bottom-left) above the grand total, with columns "Btw %" / "Bedrag" (or "Grondslag") / "B.T.W." (or "BTW bedrag"). It has 1–3 rows, one per rate. On photo/JPG/PNG invoices read carefully — numbers may be small. For multi-page invoices, the VAT summary table is often on the LAST page. Always check all pages before filling vat_breakdown. Look for sections labeled "VAT INFORMATION", "BTW Overzicht", "Btw%", or any summary table showing base amounts and tax amounts per rate.
 
+                      → PDF-SPECIFIC: When the input is a PDF, the BTW table is sometimes flattened into plain text that has lost its column lines — it may appear as a sequence of triplets like "9,00 247,81 22,30" then "21,00 73,55 15,44" (rate, base, tax) on adjacent lines. Treat each such triplet as ONE row of the BTW table. Do not merge two triplets into one row, and do not stop after the first triplet.
+
                       Step 2. For EACH row of that table (do not skip any, even if its B.T.W. is 0):
                         - 21% row → net_21 = Bedrag, vat_21 = B.T.W.
                         - 9%  row → net_9  = Bedrag, vat_9  = B.T.W.
@@ -123,11 +142,16 @@ Required JSON keys for each object:
                             · Bedrag > 0  → emballage = that Bedrag (Dutch invoices use the 0% row for fust/statiegeld/emballage). Leave net_0 = 0.
                             · Bedrag = 0  → leave both net_0 and emballage = 0 for this row.
 
+                      Step 2b. PERCENTAGE INFERENCE — if a row shows a Bedrag and a B.T.W. but the rate column is missing/unreadable, compute the rate yourself:
+                          inferred_rate = round( B.T.W. / Bedrag * 100 )
+                        Then bucket: 19–23 → 21%, 7–11 → 9%, 0–1 → 0%. Use the inferred rate to map the row in Step 2.
+                        Example: Bedrag=247.81, B.T.W.=22.30 → 22.30 / 247.81 * 100 ≈ 9.00 → 9% row → net_9=247.81, vat_9=22.30.
+
                       Step 3. Scan the rest of the invoice for:
                         - A separately labelled "Fust" / "Emballage" / "Statiegeld" / "Leeggoed" total → if not already in emballage, add it.
                         - A "vrijgesteld" / "verlegd" / "intracommunautair" base outside the BTW table → put it in net_0.
 
-                      Step 4. Sanity check: net_21 + vat_21 + net_9 + vat_9 + net_0 + emballage must equal total_amount within a few cents. If it doesn't, you almost certainly missed a row of the BTW table — go back to step 1 and re-read it before answering.
+                      Step 4. Sanity check: net_21 + vat_21 + net_9 + vat_9 + net_0 + emballage must equal total_amount within a few cents. If it doesn't, you almost certainly missed a row of the BTW table — go back to step 1 and re-read it before answering. A common pattern: when the sum is short by an amount that itself looks like ~21% of some base, you missed the 21% row.
 
                       ★ FIELD NAME VARIATIONS to recognize (different suppliers label the same column differently — match the label to the correct JSON field):
                         - net_9  (base amount at 9%):  may appear as "Base 9% VAT", "Grondslag 9%", "Bedrag 9%", "Btw% 9.00 Bedrag", "Artikel laag", "Base laag".
