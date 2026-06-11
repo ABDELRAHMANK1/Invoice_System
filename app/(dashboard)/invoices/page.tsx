@@ -42,11 +42,14 @@ async function apiJson<T>(url: string): Promise<T> {
 
 function buildQuery(q: FilterQuery, sort: Sort, page: number) {
   const qs = new URLSearchParams();
-  if (q.phone)   qs.set("phone",   q.phone);
-  if (q.client)  qs.set("client",  q.client);
-  if (q.invoice) qs.set("invoice", q.invoice);
-  if (q.from)    qs.set("from",    q.from);
-  if (q.to)      qs.set("to",      q.to);
+  const phone   = q.phone.trim();
+  const client  = q.client.trim();
+  const invoice = q.invoice.trim();
+  if (phone)   qs.set("phone",   phone);
+  if (client)  qs.set("client",  client);
+  if (invoice) qs.set("invoice", invoice);
+  if (q.from)  qs.set("from",    q.from);
+  if (q.to)    qs.set("to",      q.to);
   if (q.type !== "Alle") qs.set("direction", q.type.toLowerCase());
   qs.set("sort_by",  sort.k);
   qs.set("sort_dir", sort.dir);

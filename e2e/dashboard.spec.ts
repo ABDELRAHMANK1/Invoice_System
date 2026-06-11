@@ -154,4 +154,66 @@ test.describe("Export modal", () => {
 
     await expect.poll(() => requestedBody.type).toBe("excel");
   });
+
+  test("bulk-bar Export sends only the selected invoice ids (no filters)", async ({ page }) => {
+    let requestedBody: { type?: string; ids?: string[]; phone?: string; invoice?: string } = {};
+
+    await page.route("**/api/export", async (route) => {
+      requestedBody = JSON.parse(route.request().postData() || "{}");
+      await fulfillJson(route, {
+        jobId: "job-bulk",
+        status: "done",
+        type: "excel",
+        download_url: "data:text/plain,fake",
+        file_count: 1,
+      });
+    });
+
+    await page.goto("/invoices");
+    // Tick the checkbox on the first invoice row (the row's `cb` element)
+    await page.locator(".t-row").first().locator(".cb").first().click();
+    // BulkBar should appear; click its "Export" action
+    await page.getByRole("toolbar", { name: /bulk actions/i }).getByRole("button", { name: /^export$/i }).click();
+    // Confirm in the modal
+    await page.getByRole("button", { name: /^export excel$/i }).last().click();
+
+    await expect.poll(() => requestedBody.ids?.length).toBe(1);
+    expect(requestedBody.ids?.[0]).toBe("11111111-1111-1111-1111-111111111111");
+    // Filters must NOT leak in when ids are present
+    expect(requestedBody.phone).toBeUndefined();
+    expect(requestedBody.invoice).toBeUndefined();
+  });
+});
+
+test.describe("Invoice number filter", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.route("**/api/invoices*", async (route) => {
+      const url = new URL(route.request().url());
+      const invoiceNo = url.searchParams.get("invoice");
+      let rows = SAMPLE_INVOICES;
+      if (invoiceNo) rows = rows.filter((r) => r.invoice_number.toLowerCase().includes(invoiceNo.toLowerCase()));
+      await fulfillJson(route, paged(rows));
+    });
+  });
+
+  test("pressing Enter in the Invoice # field submits the search", async ({ page }) => {
+    await page.goto("/invoices");
+    await page.getByLabel("Filter by invoice number").fill("INV-V-0001");
+    await page.getByLabel("Filter by invoice number").press("Enter");
+    await expect(page.locator(".cell-id", { hasText: "INV-V-0001" })).toBeVisible();
+    await expect(page.locator(".cell-id", { hasText: /^INV-0001$/ })).toHaveCount(0);
+  });
+
+  test("whitespace around the invoice number is trimmed before sending", async ({ page }) => {
+    let captured: string | null | undefined;
+    await page.route("**/api/invoices*", async (route) => {
+      const url = new URL(route.request().url());
+      captured = url.searchParams.get("invoice");
+      await fulfillJson(route, paged(SAMPLE_INVOICES));
+    });
+    await page.goto("/invoices");
+    await page.getByLabel("Filter by invoice number").fill("  INV-0001  ");
+    await page.getByRole("button", { name: /apply search/i }).click();
+    await expect.poll(() => captured).toBe("INV-0001");
+  });
 });

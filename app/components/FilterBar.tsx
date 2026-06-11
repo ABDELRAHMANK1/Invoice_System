@@ -57,6 +57,12 @@ interface FilterBarProps {
 export function FilterBar({
   q, setQ, quickOn, setQuickOn, applied, removeApplied, onSearch, onClear,
 }: FilterBarProps) {
+  function onEnter(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      onSearch();
+    }
+  }
   return (
     <div className="filters">
       <div className="fbar">
@@ -67,6 +73,7 @@ export function FilterBar({
           <input
             value={q.phone}
             onChange={(e) => setQ({ ...q, phone: e.target.value })}
+            onKeyDown={onEnter}
             placeholder="+31 6 12 34 56 78"
             aria-label="Filter by phone"
           />
@@ -79,6 +86,7 @@ export function FilterBar({
           <input
             value={q.client}
             onChange={(e) => setQ({ ...q, client: e.target.value })}
+            onKeyDown={onEnter}
             placeholder="NemaFood B.V."
             aria-label="Filter by client"
           />
@@ -91,6 +99,7 @@ export function FilterBar({
           <input
             value={q.invoice}
             onChange={(e) => setQ({ ...q, invoice: e.target.value })}
+            onKeyDown={onEnter}
             placeholder="261502"
             aria-label="Filter by invoice number"
           />
