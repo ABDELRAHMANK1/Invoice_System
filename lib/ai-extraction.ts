@@ -35,6 +35,23 @@ function parseJsonArray(text: string): ExtractedInvoice[] {
     const rawVat = Number(item.vat_rate ?? 21);
     const vatRate = [0, 9, 21].includes(rawVat) ? rawVat : 21;
     const txType = item.transaction_type === "verkoop" ? "verkoop" : "inkoop";
+
+    let vatBreakdown: ExtractedInvoice["vat_breakdown"] = null;
+    if (item.vat_breakdown && typeof item.vat_breakdown === "object") {
+      const bd = {
+        net_21:    Number(item.vat_breakdown.net_21)    || 0,
+        vat_21:    Number(item.vat_breakdown.vat_21)    || 0,
+        net_9:     Number(item.vat_breakdown.net_9)     || 0,
+        vat_9:     Number(item.vat_breakdown.vat_9)     || 0,
+        net_0:     Number(item.vat_breakdown.net_0)     || 0,
+        emballage: Number(item.vat_breakdown.emballage) || 0,
+      };
+      // Collapse an all-zero breakdown to null so the export builder falls back
+      // to the vat_rate + total_amount synthesis instead of writing six zeros.
+      const allZero = bd.net_21 === 0 && bd.vat_21 === 0 && bd.net_9 === 0 && bd.vat_9 === 0 && bd.net_0 === 0 && bd.emballage === 0;
+      vatBreakdown = allZero ? null : bd;
+    }
+
     return {
       client_name: item.client_name ?? null,
       supplier_name: item.supplier_name ?? null,
@@ -43,14 +60,7 @@ function parseJsonArray(text: string): ExtractedInvoice[] {
       total_amount: typeof item.total_amount === "number" ? item.total_amount : item.total_amount ? Number(item.total_amount) : null,
       currency: item.currency ?? null,
       vat_rate: vatRate,
-      vat_breakdown: item.vat_breakdown && typeof item.vat_breakdown === "object" ? {
-        net_21: Number(item.vat_breakdown.net_21) || 0,
-        vat_21: Number(item.vat_breakdown.vat_21) || 0,
-        net_9: Number(item.vat_breakdown.net_9) || 0,
-        vat_9: Number(item.vat_breakdown.vat_9) || 0,
-        net_0: Number(item.vat_breakdown.net_0) || 0,
-        emballage: Number(item.vat_breakdown.emballage) || 0
-      } : null,
+      vat_breakdown: vatBreakdown,
       transaction_type: txType,
       confidence: typeof item.confidence === "number" ? item.confidence : null
     };
@@ -97,6 +107,8 @@ Required JSON keys for each object:
   currency          – ISO 4217 three-letter code (SAR, AED, EGP, EUR, USD, GBP …). Detect from symbol or context.
   vat_rate          – Dominant VAT rate as integer (21, 9, or 0). The rate with the largest non-zero tax amount. Keep for backwards compatibility.
   vat_breakdown     – TRANSCRIBE EVERY ROW of the invoice's BTW/VAT summary table into this object. This is a transcription task, not a selection task — vat_rate above picks ONE dominant rate, vat_breakdown captures ALL of them. The two fields are INDEPENDENT. Do NOT zero out the smaller rate just because another rate has a larger amount; do NOT collapse the table into a single rate.
+
+                      ★ NO-DATA CASE: If you cannot find ANY non-zero value for vat_breakdown — i.e. you would otherwise output every field as 0 — return null for the whole object instead. A null vat_breakdown is the explicit "I could not read the BTW table" signal; an all-zero object is wrong because it suppresses the export builder's fallback (which would otherwise synthesise the breakdown from vat_rate + total_amount). Use null only when you genuinely cannot read the breakdown; if even one rate's Bedrag or B.T.W. is non-zero, return the object.
 
                       ★ THE #1 MISTAKE (do not make it):
                       Given an invoice whose BTW table has rows for both 21% and 9%, returning {net_21:0, vat_21:0, net_9:X, vat_9:Y} because 9% has the larger amounts. This is WRONG. Both pairs must be filled.

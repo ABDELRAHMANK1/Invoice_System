@@ -20,6 +20,14 @@ const invoiceSchema = z.object({
   invoice_direction: z.enum(["inkoop", "verkoop"]).optional().nullable(),
   // Extraction metadata — kept in raw_extraction, not top-level DB columns
   vat_rate:         z.number().optional().nullable(),
+  vat_breakdown:    z.object({
+    net_21:    z.number(),
+    vat_21:    z.number(),
+    net_9:     z.number(),
+    vat_9:     z.number(),
+    net_0:     z.number(),
+    emballage: z.number(),
+  }).optional().nullable(),
   transaction_type: z.enum(["inkoop", "verkoop"]).optional().nullable()
 });
 
@@ -35,13 +43,13 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) return jsonError("Invalid invoice batch payload", 400, parsed.error.flatten());
 
   const rows = parsed.data.invoices.map((invoice) => {
-    const { vat_rate, transaction_type, ...dbFields } = invoice;
+    const { vat_rate, vat_breakdown, transaction_type, ...dbFields } = invoice;
     return {
       ...dbFields,
       invoice_direction: dbFields.invoice_direction ?? "inkoop",
       status:            dbFields.status   || "extracted",
       currency:          dbFields.currency || "EUR",
-      raw_extraction:    { ...dbFields, vat_rate, transaction_type }
+      raw_extraction:    { ...dbFields, vat_rate, vat_breakdown, transaction_type }
     };
   });
 
