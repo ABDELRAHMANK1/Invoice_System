@@ -102,7 +102,7 @@ Required JSON keys for each object:
                       Given an invoice whose BTW table has rows for both 21% and 9%, returning {net_21:0, vat_21:0, net_9:X, vat_9:Y} because 9% has the larger amounts. This is WRONG. Both pairs must be filled.
 
                       ★ PROCEDURE (follow in order):
-                      Step 1. Locate the BTW/VAT summary block. On Dutch invoices it sits near the bottom (often bottom-left) above the grand total, with columns "Btw %" / "Bedrag" (or "Grondslag") / "B.T.W." (or "BTW bedrag"). It has 1–3 rows, one per rate. On photo/JPG/PNG invoices read carefully — numbers may be small.
+                      Step 1. Locate the BTW/VAT summary block. On Dutch invoices it sits near the bottom (often bottom-left) above the grand total, with columns "Btw %" / "Bedrag" (or "Grondslag") / "B.T.W." (or "BTW bedrag"). It has 1–3 rows, one per rate. On photo/JPG/PNG invoices read carefully — numbers may be small. For multi-page invoices, the VAT summary table is often on the LAST page. Always check all pages before filling vat_breakdown. Look for sections labeled "VAT INFORMATION", "BTW Overzicht", "Btw%", or any summary table showing base amounts and tax amounts per rate.
 
                       Step 2. For EACH row of that table (do not skip any, even if its B.T.W. is 0):
                         - 21% row → net_21 = Bedrag, vat_21 = B.T.W.
