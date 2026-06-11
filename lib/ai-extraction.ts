@@ -57,33 +57,6 @@ function parseJsonArray(text: string): ExtractedInvoice[] {
   });
 }
 
-/**
- * Extracts plain text from every page of a PDF using pdfjs-dist. Returns the
- * joined text. Returns an empty string if the PDF has no extractable text
- * (e.g. scanned images), and throws on parse errors so the caller can fall
- * back to sending the raw file.
- */
-async function extractPdfText(buffer: Buffer): Promise<string> {
-  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const data = new Uint8Array(buffer);
-  const doc = await pdfjs.getDocument({ data, useSystemFonts: true }).promise;
-  const pages: string[] = [];
-  try {
-    for (let i = 1; i <= doc.numPages; i += 1) {
-      const page = await doc.getPage(i);
-      const content = await page.getTextContent();
-      const pageText = content.items
-        .map((it) => ("str" in it ? (it as { str: string }).str : ""))
-        .filter(Boolean)
-        .join(" ");
-      if (pageText.trim()) pages.push(`--- Page ${i} ---\n${pageText}`);
-    }
-  } finally {
-    await doc.destroy();
-  }
-  return pages.join("\n\n");
-}
-
 async function withRetry<T>(fn: () => Promise<T>, attempts = 3) {
   let lastError: unknown;
 
@@ -206,32 +179,15 @@ export async function extractInvoicesFromUrls(fileUrls: string[]): Promise<Extra
     )
   );
 
-  // Download files. For PDFs, also try to extract plain text up front so we can
-  // send it as input_text (gives GPT every page reliably). Images stay base64.
+  // Download files and convert to base64 so GPT can read them regardless of URL format
   const fileBuffers = await Promise.all(
-    signedUrls.map(async (url, index) => {
+    signedUrls.map(async (url) => {
       const res = await fetch(url);
       if (!res.ok) throw new Error(`Failed to download file from S3: ${res.status}`);
       const arrayBuffer = await res.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
       const mimeType = res.headers.get("content-type") || "application/octet-stream";
-      const base64 = buffer.toString("base64");
-
-      const isPdf =
-        mimeType === "application/pdf" ||
-        fileUrls[index].toLowerCase().includes(".pdf");
-
-      let pdfText: string | null = null;
-      if (isPdf) {
-        try {
-          const extracted = await extractPdfText(buffer);
-          if (extracted.trim().length > 0) pdfText = extracted;
-        } catch (err) {
-          console.warn(`[ai-extraction] PDF text extraction failed for file #${index + 1}, falling back to input_file:`, err instanceof Error ? err.message : err);
-        }
-      }
-
-      return { base64, mimeType, isPdf, pdfText };
+      const base64 = Buffer.from(arrayBuffer).toString("base64");
+      return { base64, mimeType };
     })
   );
 
@@ -241,16 +197,14 @@ export async function extractInvoicesFromUrls(fileUrls: string[]): Promise<Extra
         type: "input_text",
         text: EXTRACTION_PROMPT
       },
-      ...fileBuffers.map(({ base64, mimeType, isPdf, pdfText }) => {
+      ...fileBuffers.map(({ base64, mimeType }, index) => {
+        const originalLower = fileUrls[index].toLowerCase();
+
+        const isPdf =
+          mimeType === "application/pdf" ||
+          originalLower.includes(".pdf");
+
         if (isPdf) {
-          if (pdfText) {
-            console.log("[PDF TEXT PREVIEW]", pdfText.substring(0, 500));
-            return {
-              type: "input_text",
-              text: `Invoice text:\n${pdfText}`
-            };
-          }
-          // Fallback: scanned PDF with no extractable text, or pdfjs threw.
           return {
             type: "input_file",
             filename: "invoice.pdf",
