@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { NextRequest } from "next/server";
-import { filtersFromRequest, applyCommonFilters } from "@/lib/query";
+import { filtersFromRequest, applyCommonFilters, phonePattern } from "@/lib/query";
 
 function makeReq(url: string) {
   return new NextRequest(url);
@@ -65,7 +65,7 @@ function makeQuerySpy() {
 }
 
 describe("applyCommonFilters", () => {
-  it("applies phone ilike when phone is present", () => {
+  it("applies a formatting-tolerant phone ilike when phone is present", () => {
     const { proxy, calls } = makeQuerySpy();
     applyCommonFilters(proxy, {
       phone: "+316",
@@ -75,8 +75,33 @@ describe("applyCommonFilters", () => {
     });
     expect(calls.find((c) => c.method === "ilike")).toEqual({
       method: "ilike",
-      args: ["phone_number", "%+316%"],
+      args: ["phone_number", "%+%3%1%6%"],
     });
+  });
+
+  it("phonePattern: matches a stored phone regardless of separators", () => {
+    // The pattern produced from the user's pasted normalised digits should
+    // hit any formatting variant in the DB.
+    const pattern = phonePattern("+31612345678");
+    expect(pattern).toBe("%+%3%1%6%1%2%3%4%5%6%7%8%");
+
+    // Sanity-check that the pattern would match common formattings if we
+    // executed it with LIKE semantics (% = any chars).
+    const likeMatches = (subject: string, p: string) => {
+      // Escape regex specials in the LIKE pattern, then turn %% into .* wildcards.
+      const escaped = p.replace(/[\\^$.*+?()[\]{}|]/g, (m) => `\\${m}`);
+      const regex = new RegExp("^" + escaped.replace(/%/g, ".*") + "$", "i");
+      return regex.test(subject);
+    };
+    expect(likeMatches("+31612345678", pattern)).toBe(true);
+    expect(likeMatches("+31 6 12 34 56 78", pattern)).toBe(true);
+    expect(likeMatches("+31-6-12345678", pattern)).toBe(true);
+    expect(likeMatches("whatsapp:+31612345678", pattern)).toBe(true);
+    expect(likeMatches("+31987654321", pattern)).toBe(false);
+  });
+
+  it("phonePattern: empty/falsy input returns the catch-all pattern", () => {
+    expect(phonePattern("")).toBe("%");
   });
 
   it("applies status eq filter", () => {

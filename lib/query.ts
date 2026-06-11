@@ -14,6 +14,19 @@ export function filtersFromRequest(req: NextRequest) {
   };
 }
 
+/**
+ * Build a LIKE pattern that matches the given normalised phone digits
+ * IN ORDER, regardless of formatting in the stored column. Allows the
+ * filter to find `+31 6 12 34 56 78` (or NBSP-separated, or dashed)
+ * when the user pasted the unformatted "+31612345678" — and vice versa.
+ */
+export function phonePattern(normalisedDigits: string): string {
+  if (!normalisedDigits) return "%";
+  // Phone is already digits + "+", neither of which is a LIKE special.
+  // Insert "%" between every character so any separator in the DB matches.
+  return "%" + normalisedDigits.split("").join("%") + "%";
+}
+
 export function applyCommonFilters(
   query: any,
   filters: ReturnType<typeof filtersFromRequest>,
@@ -21,7 +34,7 @@ export function applyCommonFilters(
 ) {
   let q = query;
 
-  if (filters.phone) q = q.ilike("phone_number", `%${filters.phone}%`);
+  if (filters.phone) q = q.ilike("phone_number", phonePattern(filters.phone));
   if (filters.status) q = q.eq("status", filters.status);
   if (filters.from) q = q.gte(dateColumn, filters.from);
   if (filters.to) {
