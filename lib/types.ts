@@ -3,6 +3,15 @@ export type ExportType = "excel" | "zip";
 export type ExportStatus = "pending" | "processing" | "done" | "error";
 export type InvoiceDirection = "inkoop" | "verkoop";
 
+export interface VatBreakdown {
+  net_21: number;
+  vat_21: number;
+  net_9: number;
+  vat_9: number;
+  net_0: number;
+  emballage: number;
+}
+
 export type ExtractedInvoice = {
   client_name: string | null;
   supplier_name: string | null;
@@ -11,6 +20,7 @@ export type ExtractedInvoice = {
   total_amount: number | null;
   currency?: string | null;
   vat_rate?: number | null;
+  vat_breakdown?: VatBreakdown | null;
   transaction_type?: "inkoop" | "verkoop" | null;
   confidence?: number | null;
 };

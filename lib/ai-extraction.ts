@@ -14,6 +14,7 @@ function emptyResult(): ExtractedInvoice {
     total_amount: null,
     currency: null,
     vat_rate: 21,
+    vat_breakdown: null,
     transaction_type: "inkoop",
     confidence: 0
   };
@@ -42,6 +43,14 @@ function parseJsonArray(text: string): ExtractedInvoice[] {
       total_amount: typeof item.total_amount === "number" ? item.total_amount : item.total_amount ? Number(item.total_amount) : null,
       currency: item.currency ?? null,
       vat_rate: vatRate,
+      vat_breakdown: item.vat_breakdown && typeof item.vat_breakdown === "object" ? {
+        net_21: Number(item.vat_breakdown.net_21) || 0,
+        vat_21: Number(item.vat_breakdown.vat_21) || 0,
+        net_9: Number(item.vat_breakdown.net_9) || 0,
+        vat_9: Number(item.vat_breakdown.vat_9) || 0,
+        net_0: Number(item.vat_breakdown.net_0) || 0,
+        emballage: Number(item.vat_breakdown.emballage) || 0
+      } : null,
       transaction_type: txType,
       confidence: typeof item.confidence === "number" ? item.confidence : null
     };
@@ -79,16 +88,21 @@ Required JSON keys for each object:
   date              – Invoice date in ISO format YYYY-MM-DD.
   total_amount      – Grand total as a plain number INCLUDING tax/VAT/BTW/ضريبة. No currency symbols.
   currency          – ISO 4217 three-letter code (SAR, AED, EGP, EUR, USD, GBP …). Detect from symbol or context.
-  vat_rate          – VAT/BTW/ضريبة القيمة المضافة percentage as integer: exactly 21, 9, or 0.
-                       Use the rate that has an ACTUAL non-zero tax amount. If the invoice shows multiple BTW rows (0%, 9%, 21%), pick the one where the BTW bedrag (tax amount) is greater than zero.
-                       If multiple rates have non-zero amounts, pick the DOMINANT one (highest total base amount).
-                       If all rates show zero, use the rate explicitly applied to line items.
-                       Default 21 only when you truly cannot determine the rate.
-                       Examples:
-                       - BTW 9% = €62,37, BTW 21% = €0,00 → vat_rate = 9
-                       - BTW 21% = €150,00, BTW 9% = €0,00 → vat_rate = 21
-                       - BTW 21% = €50,00, BTW 9% = €20,00 → vat_rate = 21 (dominant)
-                       - All BTW rows = €0,00, line items show "9" in BTW column → vat_rate = 9
+  vat_rate          – Dominant VAT rate as integer (21, 9, or 0). The rate with the largest non-zero tax amount. Keep for backwards compatibility.
+  vat_breakdown     – An object with the full BTW breakdown of the invoice. Read the BTW table / totals section of the invoice carefully. All values are plain numbers (no currency symbols), use 0 when that rate is not present:
+                      {
+                        "net_21": <total amount excl. BTW taxed at 21%>,
+                        "vat_21": <BTW amount at 21%>,
+                        "net_9":  <total amount excl. BTW taxed at 9%>,
+                        "vat_9":  <BTW amount at 9%>,
+                        "net_0":  <total amount at 0% BTW (vrijgesteld/verlegd)>,
+                        "emballage": <fust/emballage/statiegeld amount if shown separately, else 0>
+                      }
+                      Examples:
+                      - Invoice shows "BTW 9%: grondslag €693.01, bedrag €62.37" and nothing at 21% → {"net_21":0,"vat_21":0,"net_9":693.01,"vat_9":62.37,"net_0":0,"emballage":0}
+                      - Invoice shows "Excl. 21% BTW €185.17, BTW 21% €38.89" → {"net_21":185.17,"vat_21":38.89,"net_9":0,"vat_9":0,"net_0":0,"emballage":0}
+                      - Invoice shows both rates plus Fust €10.80 → fill all fields accordingly.
+                      Validation: net_21 + vat_21 + net_9 + vat_9 + net_0 + emballage should equal total_amount (small rounding differences are OK).
   transaction_type  – Almost always "inkoop". Only set to "verkoop" if the document explicitly says "Verkoopfactuur" or clearly shows it is a sales invoice issued BY the user's own company. Default "inkoop".
   confidence        – Your confidence 0.0–1.0 that the extraction is correct.
 
