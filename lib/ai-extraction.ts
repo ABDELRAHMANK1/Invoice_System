@@ -163,6 +163,27 @@ Required JSON keys for each object:
                       Shape (plain numbers only, no currency symbols, use 0 when absent):
                       { "net_21": <num>, "vat_21": <num>, "net_9": <num>, "vat_9": <num>, "net_0": <num>, "emballage": <num> }
 
+                      ★ WORKED EXAMPLE — interleaved-layout PDF (real failure case, total €1,195.51):
+                      The PDF text extraction smashed the BTW summary into this jumbled order:
+                          Base 9% VAT:
+                          VAT 9%:
+                          1,045.33 €
+                          9.73 €   91% VAT:        ← "91% VAT" is an OCR misread of "21% VAT"
+                          VAT 21%:
+                          46.34 €
+                          Total EX VAT:   1,091.67 €
+                          Total VAT:      103.84 €
+                          ... Emballage ...
+                          Total: 1,195.51
+                      Reconstruct the table by pairing each amount with its label using arithmetic:
+                          - 9% base = 1,045.33  → 9% VAT must be 1045.33 × 0.09 ≈ 94.11
+                          - 21% base = 46.34   → 21% VAT must be 46.34 × 0.21 = 9.73 (the "9.73 €" above)
+                          - Cross-check: 94.11 + 9.73 = 103.84 = "Total VAT" ✓
+                          - Cross-check: 1045.33 + 46.34 = 1091.67 = "Total EX VAT" ✓
+                      CORRECT output:
+                          {"net_21":46.34, "vat_21":9.73, "net_9":1045.33, "vat_9":94.11, "net_0":0, "emballage":<emballage value if visible, else 0>}
+                      The model has previously been MISSING the {net_21:46.34, vat_21:9.73} pair on this layout and outputting only the 9% pair. DO NOT make that mistake again. Use the cross-checks against "Total EX VAT" and "Total VAT" to verify you have BOTH pairs.
+
                       ★ WORKED EXAMPLE — the failure case to memorise (Mix Food, total €369.91):
                       BTW table on the invoice reads:
                           0%   | Bedrag 10.80   | B.T.W. 0.00
