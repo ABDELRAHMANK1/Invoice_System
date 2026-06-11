@@ -117,6 +117,13 @@ Required JSON keys for each object:
 
                       Step 4. Sanity check: net_21 + vat_21 + net_9 + vat_9 + net_0 + emballage must equal total_amount within a few cents. If it doesn't, you almost certainly missed a row of the BTW table — go back to step 1 and re-read it before answering.
 
+                      ★ FIELD NAME VARIATIONS to recognize (different suppliers label the same column differently — match the label to the correct JSON field):
+                        - net_9  (base amount at 9%):  may appear as "Base 9% VAT", "Grondslag 9%", "Bedrag 9%", "Btw% 9.00 Bedrag", "Artikel laag", "Base laag".
+                        - vat_9  (tax amount at 9%):   may appear as "VAT 9%", "BTW 9%", "Btw laag", "B.T.W. 9%".
+                        - net_21 (base amount at 21%): may appear as "Base 21% VAT", "Grondslag 21%", "Bedrag 21%", "Btw% 21.00 Bedrag", "Artikel hoog", "Base hoog".
+                        - vat_21 (tax amount at 21%): may appear as "VAT 21%", "BTW 21%", "Btw hoog", "B.T.W. 21%".
+                        - emballage: may appear as "Fust", "Statiegeld", "Emballage", or a 0% row with non-zero amount.
+
                       Shape (plain numbers only, no currency symbols, use 0 when absent):
                       { "net_21": <num>, "vat_21": <num>, "net_9": <num>, "vat_9": <num>, "net_0": <num>, "emballage": <num> }
 
