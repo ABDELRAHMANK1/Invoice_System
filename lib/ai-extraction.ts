@@ -244,6 +244,7 @@ export async function extractInvoicesFromUrls(fileUrls: string[]): Promise<Extra
       ...fileBuffers.map(({ base64, mimeType, isPdf, pdfText }) => {
         if (isPdf) {
           if (pdfText) {
+            console.log("[PDF TEXT PREVIEW]", pdfText.substring(0, 500));
             return {
               type: "input_text",
               text: `Invoice text:\n${pdfText}`
