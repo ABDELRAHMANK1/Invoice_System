@@ -75,6 +75,13 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 3) {
 }
 
 const EXTRACTION_PROMPT = `
+IMPORTANT — MULTI-DOCUMENT IMAGES: Some invoice photos contain multiple overlapping documents (e.g. a payment receipt stapled or placed on top of the actual invoice). In this case:
+- The INVOICE is the larger background document with the supplier letterhead, line items table, and BTW summary table at the bottom.
+- The RECEIPT/BETALING slip is the smaller foreground document showing only a payment total and terminal info.
+- You MUST extract data from the INVOICE, not the receipt.
+- The BTW breakdown table is ALWAYS on the invoice (bottom section), never on the receipt.
+- If you see "BETALING", "Kopie Kaarthouder", "V-PAY", "Terminal", "Auth. code" — that is a payment receipt, ignore it for extraction purposes.
+
 You are an expert invoice data extraction system. Documents may be written in Arabic, English, Dutch, or any other language. Always read the full document carefully before responding.
 
 Extract invoice data from each attached file in order.
