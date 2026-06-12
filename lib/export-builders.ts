@@ -51,38 +51,7 @@ async function saveLocalExport(params: { body: Buffer; jobId: string; type: "exc
   };
 }
 
-// ── Boekingen Excel template ──────────────────────────────────────────────────
-//
-//  Matches the column layout, widths, font (Aptos Narrow 11pt), and header
-//  colours from the reference file Boekingen (1)-.xlsx.
-//  Red header columns: B D G H I M N
-//
-const RED = "FFFF0000";
-
-const BOEKINGEN_COLS: { header: string; key: string; width: number; red?: true }[] = [
-  { header: "JournaalPostId",           key: "journaalPostId",           width: 37.21875 },
-  { header: "BookingId",                key: "bookingId",                width: 11.77734375, red: true },
-  { header: "Betalingstermijn",         key: "betalingstermijn",         width: 16.21875 },
-  { header: "Datum",                    key: "datum",                    width: 13.21875, red: true },
-  { header: "DagboekSoort",             key: "dagboekSoort",             width: 51.21875 },
-  { header: "DagboekNaam",              key: "dagboekNaam",              width: 30.21875 },
-  { header: "DagboekNummer",            key: "dagboekNummer",            width: 17.77734375, red: true },
-  { header: "Omschrijving",             key: "omschrijving",             width: 58.77734375, red: true },
-  { header: "Regel",                    key: "regel",                    width: 9, red: true },
-  { header: "Debet",                    key: "debet",                    width: 9 },
-  { header: "Credit",                   key: "credit",                   width: 12 },
-  { header: "GrootboekNaam",            key: "grootboekNaam",            width: 31.21875 },
-  { header: "GrootboekNummer",          key: "grootboekNummer",          width: 20.21875, red: true },
-  { header: "BtwSoort",                 key: "btwSoort",                 width: 11.77734375, red: true },
-  { header: "BtwPercentage",            key: "btwPercentage",            width: 17.77734375 },
-  { header: "Boekstuk",                 key: "boekstuk",                 width: 10.5546875 },
-  { header: "FactuurNummerId",          key: "factuurNummerId",          width: 40 },
-  { header: "FactuurNummer",            key: "factuurNummer",            width: 19.5546875 },
-  { header: "KostenplaatsOmschrijving", key: "kostenplaatsOmschrijving", width: 29 },
-  { header: "KostenplaatsNummer",       key: "kostenplaatsNummer",       width: 22.21875 },
-  { header: "RelatieNaam",              key: "relatieNaam",              width: 14.77734375 },
-  { header: "RelatieCode",              key: "relatieCode",              width: 13.77734375 }
-];
+// ── Snelstart Boekingen base font ─────────────────────────────────────────────
 
 const BASE_FONT: Partial<ExcelJS.Font> = {
   size: 11,
@@ -96,69 +65,6 @@ const BASE_FONT: Partial<ExcelJS.Font> = {
 
 function round2(n: number) {
   return Math.round(n * 100) / 100;
-}
-
-type OmschrijvingValue = string | null | { formula: string; result: string };
-
-interface BookingRowParams {
-  bookingId: number;
-  datum: Date | null;
-  omschrijving: OmschrijvingValue;
-  regel: number;
-  debet: number;
-  credit: number;
-  grootboekNaam: string | null;
-  grootboekNummer: number | null;
-  btwSoort: number | null;
-  btwPercentage: number | null;
-  factuurNummerId: string;
-  factuurNummer: string;
-  relatieNaam: string | null;
-  relatieCode: number | string;
-  dagboekSoort: string;
-  dagboekNaam: string;
-  dagboekNummer: number;
-}
-
-function addBookingRow(sheet: ExcelJS.Worksheet, params: BookingRowParams): ExcelJS.Row {
-  const row = sheet.addRow({
-    journaalPostId:           null,
-    bookingId:                params.bookingId,
-    betalingstermijn:         null,
-    datum:                    params.datum,
-    dagboekSoort:             params.dagboekSoort,
-    dagboekNaam:              params.dagboekNaam,
-    dagboekNummer:            params.dagboekNummer,
-    omschrijving:             null,
-    regel:                    params.regel,
-    debet:                    params.debet,
-    credit:                   params.credit,
-    grootboekNaam:            params.grootboekNaam,
-    grootboekNummer:          params.grootboekNummer,
-    btwSoort:                 params.btwSoort,
-    btwPercentage:            params.btwPercentage,
-    boekstuk:                 null,
-    factuurNummerId:          params.factuurNummerId,
-    factuurNummer:            params.factuurNummer,
-    kostenplaatsOmschrijving: null,
-    kostenplaatsNummer:       null,
-    relatieNaam:              params.relatieNaam,
-    relatieCode:              params.relatieCode
-  });
-
-  // Column 8 = H = Omschrijving (may be a cell formula)
-  row.getCell(8).value = params.omschrijving as ExcelJS.CellValue;
-
-  if (params.datum) {
-    row.getCell(4).numFmt = "mm-dd-yy";
-  }
-
-  row.eachCell({ includeEmpty: false }, (cell) => {
-    cell.font = BASE_FONT;
-  });
-
-  row.commit();
-  return row;
 }
 
 // ── Native Snelstart INKOOP sheet — 24 columns, 6 rows per invoice ──────────
@@ -318,109 +224,195 @@ function writeInkoopSheet(workbook: ExcelJS.Workbook, invoices: InvoiceExportRow
   });
 }
 
-// ── Verkoop sheet (existing Boekingen layout, untouched semantics) ──────────
+// ── Native Snelstart VERKOOP sheet — 25 columns, 2 or 3 rows per invoice ────
 //
-// VERKOOP (dagboek 1300 / Debiteuren):
-//   Regel 0: Debiteuren (1300)  Debet=total_incl   btwSoort=0
-//   Regel 1: Omzet (8100/8110/8170)  Credit=excl_btw  btwSoort=2/1/0
-//   Regel 2: BTW af te dragen (1671/1670)  Credit=btw_amount  (omitted when vat=0%)
+//   Regel 2: BTW af te dragen (1671 hoog / 1670 laag)  Credit=btw    (omitted at 0%)
+//   Regel 1: Omzet (8200 hoog / 8210 laag / 8170 verlegd)  Credit=net
+//   Regel 0: 1300 Debiteuren                              Debet=total_incl
+
+const VERKOOP_COLS: { header: string; key: string; width: number }[] = [
+  { header: "BookingId",                 key: "bookingId",                 width: 11 },
+  { header: "Dagboeknaam",               key: "dagboeknaam",               width: 14 },
+  { header: "Datum",                     key: "datum",                     width: 12 },
+  { header: "Regel",                     key: "regel",                     width: 7 },
+  { header: "Omschrijving",              key: "omschrijving",              width: 32 },
+  { header: "Grootboek",                 key: "grootboek",                 width: 10 },
+  { header: "Grootboeknaam",             key: "grootboeknaam",             width: 32 },
+  { header: "Debet",                     key: "debet",                     width: 11 },
+  { header: "Credit",                    key: "credit",                    width: 11 },
+  { header: "Saldo",                     key: "saldo",                     width: 11 },
+  { header: "Btw-soort",                 key: "btwSoort",                  width: 10 },
+  { header: "Factuurnummer",             key: "factuurnummer",             width: 18 },
+  { header: "Dagboek",                   key: "dagboek",                   width: 10 },
+  { header: "Dagboeksoort",              key: "dagboeksoort",              width: 18 },
+  { header: "Boekstuk",                  key: "boekstuk",                  width: 10 },
+  { header: "Gewijzigd door accountant", key: "gewijzigdDoorAccountant",   width: 26 },
+  { header: "Relatiecode",               key: "relatiecode",               width: 12 },
+  { header: "Relatienaam",               key: "relatienaam",               width: 28 },
+  { header: "Grootboekrekening type",    key: "grootboekrekeningType",     width: 22 },
+  { header: "Grootboek functie",         key: "grootboekFunctie",          width: 22 },
+  { header: "Gemarkeerd",                key: "gemarkeerd",                width: 12 },
+  { header: "Bijlagen",                  key: "bijlagen",                  width: 10 },
+  { header: "Bankomschrijving",          key: "bankomschrijving",          width: 22 },
+  { header: "Kostenplaats",              key: "kostenplaats",              width: 12 },
+  { header: "Kostenplaatsnaam",          key: "kostenplaatsnaam",          width: 20 },
+];
+
+interface VerkoopRowSpec {
+  regel: number;
+  grootboek: number;
+  grootboeknaam: string;
+  debet: number;
+  credit: number;
+  /** Native Snelstart label — text, not numeric (verkoop convention). */
+  btwSoort: "Hoog" | "Laag" | "Geen";
+  grootboekrekeningType: "Balans" | "Verlies & Winst";
+  grootboekFunctie: string;
+}
+
+function verkoopRowSpecs(totalIncl: number, vatPct: 0 | 9 | 21): VerkoopRowSpec[] {
+  const regel0: VerkoopRowSpec = {
+    regel: 0,
+    grootboek: 1300,
+    grootboeknaam: "Debiteuren",
+    debet: round2(totalIncl),
+    credit: 0,
+    btwSoort: "Geen",
+    grootboekrekeningType: "Balans",
+    grootboekFunctie: "DagboekVerkoop",
+  };
+
+  // 0% / verlegd: 2 rows only (no BTW row).
+  if (vatPct === 0) {
+    return [
+      {
+        regel: 1,
+        grootboek: 8170,
+        grootboeknaam: "Omzet binnen EU diensten",
+        debet: 0,
+        credit: round2(totalIncl),
+        btwSoort: "Geen",
+        grootboekrekeningType: "Verlies & Winst",
+        grootboekFunctie: "VerkopenOmzetVrijgesteld",
+      },
+      regel0,
+    ];
+  }
+
+  const btw = round2((totalIncl / (1 + vatPct / 100)) * (vatPct / 100));
+  const net = round2(totalIncl - btw);
+
+  if (vatPct === 9) {
+    return [
+      {
+        regel: 2,
+        grootboek: 1670,
+        grootboeknaam: "Btw af te dragen laag (verkopen)",
+        debet: 0,
+        credit: btw,
+        btwSoort: "Laag",
+        grootboekrekeningType: "Balans",
+        grootboekFunctie: "BtwAfTeDragenLaag",
+      },
+      {
+        regel: 1,
+        grootboek: 8210,
+        grootboeknaam: "Omzet laag (diensten)",
+        debet: 0,
+        credit: net,
+        btwSoort: "Laag",
+        grootboekrekeningType: "Verlies & Winst",
+        grootboekFunctie: "VerkopenOmzetLaag",
+      },
+      regel0,
+    ];
+  }
+
+  // 21% — default
+  return [
+    {
+      regel: 2,
+      grootboek: 1671,
+      grootboeknaam: "Btw af te dragen hoog (verkopen)",
+      debet: 0,
+      credit: btw,
+      btwSoort: "Hoog",
+      grootboekrekeningType: "Balans",
+      grootboekFunctie: "BtwAfTeDragenHoog",
+    },
+    {
+      regel: 1,
+      grootboek: 8200,
+      grootboeknaam: "Omzet hoog (diensten)",
+      debet: 0,
+      credit: net,
+      btwSoort: "Hoog",
+      grootboekrekeningType: "Verlies & Winst",
+      grootboekFunctie: "VerkopenOmzetHoog",
+    },
+    regel0,
+  ];
+}
 
 function writeVerkoopSheet(workbook: ExcelJS.Workbook, invoices: InvoiceExportRow[]) {
-  const sheet = workbook.addWorksheet("Sheet1");
-  sheet.columns = BOEKINGEN_COLS.map(({ header, key, width }) => ({ header, key, width }));
+  const sheet = workbook.addWorksheet("Verkoop");
+  sheet.columns = VERKOOP_COLS.map(({ header, key, width }) => ({ header, key, width }));
 
   const headerRow = sheet.getRow(1);
-  headerRow.eachCell((cell, colNum) => {
-    const col = BOEKINGEN_COLS[colNum - 1];
-    cell.font = { ...BASE_FONT, bold: true, color: col?.red ? { argb: RED } : { theme: 1 } };
+  headerRow.eachCell((cell) => {
+    cell.font = { ...BASE_FONT, bold: true };
   });
   headerRow.commit();
   sheet.views = [{ state: "frozen", ySplit: 1 }];
 
-  let currentSheetRow = 2;
-
   invoices.forEach((inv, idx) => {
-    const bookingId = idx + 1;
-    const datum = inv.date ? new Date(`${inv.date}T00:00:00`) : null;
+    const boekstuk  = idx + 1;
+    const datum     = inv.date ? new Date(`${inv.date}T00:00:00`) : null;
+    const totalIncl = Number(inv.total_amount ?? 0);
+    const party     = inv.client_name || null;
+    const relatieCode = inv.relatie_code && inv.relatie_code.trim() !== "" ? inv.relatie_code : boekstuk;
 
     const rawExt = (inv.raw_extraction as Record<string, unknown>) ?? {};
     const rawVat = Number(rawExt.vat_rate ?? rawExt.btw_percentage ?? 21);
-    const vatPct = [0, 9, 21].includes(rawVat) ? rawVat : 21;
+    const vatPct = ([0, 9, 21] as const).includes(rawVat as 0 | 9 | 21) ? (rawVat as 0 | 9 | 21) : 21;
 
-    const totalIncl = Number(inv.total_amount ?? 0);
-    const btwBedrag = vatPct === 0 ? 0 : round2((totalIncl / (1 + vatPct / 100)) * (vatPct / 100));
-    const exclBtw   = round2(totalIncl - btwBedrag);
+    verkoopRowSpecs(totalIncl, vatPct).forEach((spec) => {
+      const row = sheet.addRow({
+        bookingId:               boekstuk,
+        dagboeknaam:             "Debiteuren",
+        datum:                   datum,
+        regel:                   spec.regel,
+        omschrijving:            party,
+        grootboek:               spec.grootboek,
+        grootboeknaam:           spec.grootboeknaam,
+        debet:                   spec.debet,
+        credit:                  spec.credit,
+        saldo:                   round2(spec.debet - spec.credit),
+        btwSoort:                spec.btwSoort,
+        factuurnummer:           inv.invoice_number,
+        dagboek:                 1300,
+        dagboeksoort:            "dagboek Verkoop",
+        boekstuk:                boekstuk,
+        gewijzigdDoorAccountant: false,
+        relatiecode:             relatieCode,
+        relatienaam:             party,
+        grootboekrekeningType:   spec.grootboekrekeningType,
+        grootboekFunctie:        spec.grootboekFunctie,
+        gemarkeerd:              false,
+        bijlagen:                true,
+        bankomschrijving:        null,
+        kostenplaats:            0,
+        kostenplaatsnaam:        null,
+      });
 
-    const common = {
-      bookingId,
-      datum,
-      factuurNummerId: inv.id,
-      factuurNummer:   inv.invoice_number,
-      relatieNaam:     inv.client_name || null,
-      relatieCode:     inv.relatie_code && inv.relatie_code.trim() !== "" ? inv.relatie_code : bookingId
-    };
+      if (datum) row.getCell(3).numFmt = "dd-mm-yyyy";
+      for (const numCol of [8, 9, 10]) row.getCell(numCol).numFmt = "#,##0.00";
 
-    const regel0Row = currentSheetRow;
-    const regel1Row = currentSheetRow + 1;
-    const dagboek = { dagboekSoort: "dagboek Verkoop", dagboekNaam: "Debiteuren", dagboekNummer: 1300 };
-
-    addBookingRow(sheet, {
-      ...common, ...dagboek,
-      omschrijving:    inv.client_name || null,
-      regel:           0,
-      debet:           totalIncl,
-      credit:          0,
-      grootboekNaam:   "Debiteuren",
-      grootboekNummer: 1300,
-      btwSoort:        0,
-      btwPercentage:   null
+      row.eachCell({ includeEmpty: false }, (cell) => {
+        cell.font = BASE_FONT;
+      });
+      row.commit();
     });
-
-    if (vatPct === 0) {
-      addBookingRow(sheet, {
-        ...common, ...dagboek,
-        omschrijving:    { formula: `H${regel0Row}`, result: inv.client_name || "" },
-        regel:           1,
-        debet:           0,
-        credit:          totalIncl,
-        grootboekNaam:   "Omzet binnen EU handelsgoederen",
-        grootboekNummer: 8170,
-        btwSoort:        0,
-        btwPercentage:   null
-      });
-      currentSheetRow += 2;
-    } else {
-      const btwSoort  = vatPct === 9 ? 1 : 2;
-      const omzetNaam = vatPct === 9 ? "Omzet laag handelsgoederen"   : "Omzet hoog handelsgoederen";
-      const omzetNr   = vatPct === 9 ? 8110                           : 8100;
-      const btwNaam   = vatPct === 9 ? "BTW af te dragen laag"        : "BTW af te dragen hoog";
-      const btwNr     = vatPct === 9 ? 1670                           : 1671;
-
-      addBookingRow(sheet, {
-        ...common, ...dagboek,
-        omschrijving:    { formula: `H${regel0Row}`, result: inv.client_name || "" },
-        regel:           1,
-        debet:           0,
-        credit:          exclBtw,
-        grootboekNaam:   omzetNaam,
-        grootboekNummer: omzetNr,
-        btwSoort,
-        btwPercentage:   vatPct
-      });
-
-      addBookingRow(sheet, {
-        ...common, ...dagboek,
-        omschrijving:    { formula: `H${regel1Row}`, result: inv.client_name || "" },
-        regel:           2,
-        debet:           0,
-        credit:          btwBedrag,
-        grootboekNaam:   btwNaam,
-        grootboekNummer: btwNr,
-        btwSoort,
-        btwPercentage:   vatPct
-      });
-      currentSheetRow += 3;
-    }
   });
 }
 
