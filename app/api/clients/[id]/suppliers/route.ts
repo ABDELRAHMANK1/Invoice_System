@@ -31,7 +31,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     .eq("client_id", id)
     .order("name", { ascending: true });
 
-  if (error) return jsonError(error.message, 500);
+  if (error) {
+    console.error(`[suppliers.GET] client_id=${id} supabase error:`, error);
+    return jsonError(error.message, 500);
+  }
   return NextResponse.json(data ?? []);
 }
 
@@ -40,11 +43,43 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (authError) return authError;
 
   const { id } = await params;
-  const parsed = createSchema.safeParse(await req.json().catch(() => ({})));
-  if (!parsed.success) return jsonError("Invalid supplier data", 400, parsed.error.flatten());
+
+  // Read the body, surfacing parse failures explicitly instead of silently coercing to {}.
+  let rawBody: unknown;
+  try {
+    rawBody = await req.json();
+  } catch (e) {
+    console.warn(`[suppliers.POST] client_id=${id} invalid JSON body:`, e instanceof Error ? e.message : e);
+    return jsonError("Invalid JSON body", 400);
+  }
+
+  const parsed = createSchema.safeParse(rawBody);
+  if (!parsed.success) {
+    console.warn(`[suppliers.POST] client_id=${id} validation failed:`, parsed.error.flatten());
+    return jsonError("Invalid supplier data", 400, parsed.error.flatten());
+  }
+
+  // Pre-check the client exists — surfaces the real cause when a stale dashboard
+  // tries to insert against a deleted client_id (which previously bubbled up as
+  // a confusing "violates foreign key constraint" 500).
+  const { data: clientRow, error: clientErr } = await supabaseAdmin
+    .from("clients")
+    .select("id")
+    .eq("id", id)
+    .maybeSingle();
+  if (clientErr) {
+    console.error(`[suppliers.POST] client lookup failed for client_id=${id}:`, clientErr);
+    return jsonError(clientErr.message, 500);
+  }
+  if (!clientRow) {
+    console.warn(`[suppliers.POST] client_id=${id} not found — refusing insert`);
+    return jsonError("Client not found", 404);
+  }
 
   const { email, ...rest } = parsed.data;
   const payload = { ...rest, client_id: id, email: email || null };
+
+  console.log(`[suppliers.POST] inserting for client_id=${id} payload:`, payload);
 
   const { data, error } = await supabaseAdmin
     .from("suppliers")
@@ -52,6 +87,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     .select("*")
     .single();
 
-  if (error) return jsonError(error.message, 500);
+  if (error) {
+    console.error(`[suppliers.POST] insert failed for client_id=${id}:`, error);
+    // Foreign-key violation → translate to 404 so the dashboard sees a meaningful error.
+    if (error.code === "23503") return jsonError("Client not found or has been deleted", 404);
+    return jsonError(error.message, 500);
+  }
+
+  // Defensive: insert with RETURNING should always give us the row. If it doesn't,
+  // treat that as a server error rather than reporting a phantom success.
+  if (!data) {
+    console.error(`[suppliers.POST] insert returned no row for client_id=${id} — Supabase response was empty`);
+    return jsonError("Supplier insert returned no data", 500);
+  }
+
+  console.log(`[suppliers.POST] inserted supplier id=${data.id} for client_id=${id}`);
   return NextResponse.json(data, { status: 201 });
 }
