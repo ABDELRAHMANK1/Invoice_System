@@ -163,7 +163,8 @@ export function UploadModal({ open, onClose, onSuccess }: UploadModalProps) {
     return { total, done, error, upload, pending };
   }, [items]);
 
-  const allDoneOrError = items.length > 0 && counts.pending === 0 && counts.upload === 0;
+  const allSettled  = items.length > 0 && counts.pending === 0 && counts.upload === 0;
+  const allSucceeded = allSettled && counts.error === 0;
   const totalBytes = items.reduce((s, it) => s + it.file.size, 0);
 
   if (!open) return null;
@@ -309,9 +310,9 @@ export function UploadModal({ open, onClose, onSuccess }: UploadModalProps) {
             <button className="btn" onClick={clearAll}>Clear all</button>
           )}
           <button className="btn" onClick={onClose} disabled={running}>
-            {allDoneOrError ? "Close" : "Cancel"}
+            {allSettled ? "Close" : "Cancel"}
           </button>
-          {!allDoneOrError && (
+          {!allSucceeded && (
             <button
               className="btn primary"
               onClick={handleUpload}

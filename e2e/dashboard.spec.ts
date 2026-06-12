@@ -217,3 +217,145 @@ test.describe("Invoice number filter", () => {
     await expect.poll(() => captured).toBe("INV-0001");
   });
 });
+
+test.describe("Upload modal — batch", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.route("**/api/invoices*", async (route) => fulfillJson(route, paged(SAMPLE_INVOICES)));
+  });
+
+  test("picks multiple files, lists them, uploads with concurrency cap 5", async ({ page }) => {
+    // Hooks for verifying the batch flow
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let uploadCount = 0;
+    let filesCount = 0;
+    const phonesSeen = new Set<string>();
+    const directionsSeen = new Set<string>();
+
+    await page.route("**/api/upload", async (route) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      uploadCount += 1;
+      // Capture phone from multipart form
+      const body = route.request().postData() || "";
+      const phoneMatch = body.match(/name="phone_number"\s*\r?\n\s*\r?\n([^\r\n]+)/);
+      if (phoneMatch) phonesSeen.add(phoneMatch[1]);
+      // Hold each upload open briefly so concurrency is observable
+      await new Promise((r) => setTimeout(r, 80));
+      inFlight -= 1;
+      await fulfillJson(route, {
+        file_key:  `files/2026/06/u-${uploadCount}.pdf`,
+        file_url:  `s3://bucket/files/2026/06/u-${uploadCount}.pdf`,
+        file_name: `file-${uploadCount}.pdf`,
+        file_size: 1234,
+        mime_type: "application/pdf",
+      });
+    });
+
+    await page.route("**/api/files", async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      filesCount += 1;
+      const json = JSON.parse(route.request().postData() || "{}");
+      if (json.invoice_direction) directionsSeen.add(json.invoice_direction);
+      await fulfillJson(route, { id: `f-${filesCount}`, status: "pending" });
+    });
+
+    await page.goto("/invoices");
+    await page.getByRole("button", { name: /^upload$/i }).click();
+    await expect(page.getByRole("dialog", { name: /upload invoice/i })).toBeVisible();
+
+    // Build 12 in-memory PDFs and pick them all at once
+    const N = 12;
+    const fakeFiles = Array.from({ length: N }, (_, i) => ({
+      name: `inv-${String(i + 1).padStart(2, "0")}.pdf`,
+      mimeType: "application/pdf",
+      buffer: Buffer.from(`%PDF-1.4\n% test file ${i + 1}\n`),
+    }));
+
+    await page.locator('input[type="file"]').setInputFiles(fakeFiles);
+
+    // The file list should show every selected file
+    for (const f of fakeFiles) {
+      await expect(page.getByText(f.name, { exact: true })).toBeVisible();
+    }
+    await expect(page.getByText(/12 selected/)).toBeVisible();
+
+    // Fill in the phone + pick direction (scope direction to the modal — the filter bar also has Verkoop)
+    await page.getByLabel(/phone number/i).fill("+31 6 99 88 77 66");
+    await page.getByRole("dialog", { name: /upload invoice/i }).getByRole("button", { name: /verkoop/i }).click();
+
+    // Kick off the batch
+    await page.getByRole("button", { name: /upload 12 files/i }).click();
+
+    // Wait until every row reports "done"
+    await expect.poll(async () => uploadCount, { timeout: 15_000 }).toBe(N);
+    await expect.poll(async () => filesCount, { timeout: 15_000 }).toBe(N);
+
+    // Concurrency cap = 5
+    expect(maxInFlight).toBeLessThanOrEqual(5);
+    expect(maxInFlight).toBeGreaterThan(1); // proves the worker pool actually parallelised
+
+    // All N got the same phone + direction
+    expect([...phonesSeen]).toEqual(["+31 6 99 88 77 66"]);
+    expect([...directionsSeen]).toEqual(["verkoop"]);
+
+    // Primary button collapses to "Close" once every file is done/failed
+    // (scope past the X iconbtn which also has aria-label="Close")
+    await expect(
+      page.getByRole("dialog", { name: /upload invoice/i })
+        .locator(".modal-foot")
+        .getByRole("button", { name: /^close$/i })
+    ).toBeVisible();
+  });
+
+  test("one bad file is isolated and Retry failed re-runs only it", async ({ page }) => {
+    const failedNames = new Set(["inv-02.pdf"]);
+    let uploadCalls = 0;
+
+    await page.route("**/api/upload", async (route) => {
+      uploadCalls += 1;
+      const body = route.request().postData() || "";
+      const nameMatch = body.match(/filename="([^"]+)"/);
+      const name = nameMatch?.[1] ?? "";
+      if (failedNames.has(name)) {
+        await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "boom" }) });
+        return;
+      }
+      await fulfillJson(route, {
+        file_key: `k/${name}`, file_url: `s3://b/${name}`, file_name: name, file_size: 100, mime_type: "application/pdf",
+      });
+    });
+    await page.route("**/api/files", async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      await fulfillJson(route, { id: "f-x", status: "pending" });
+    });
+
+    await page.goto("/invoices");
+    await page.getByRole("button", { name: /^upload$/i }).click();
+
+    const N = 3;
+    await page.locator('input[type="file"]').setInputFiles(
+      Array.from({ length: N }, (_, i) => ({
+        name: `inv-${String(i + 1).padStart(2, "0")}.pdf`,
+        mimeType: "application/pdf",
+        buffer: Buffer.from(`%PDF-1.4\n%t\n`),
+      }))
+    );
+    await page.getByLabel(/phone number/i).fill("+31600000000");
+    await page.getByRole("button", { name: /upload 3 files/i }).click();
+
+    // Wait for the batch to settle (2 ok, 1 failed)
+    await expect(page.getByRole("button", { name: /retry failed/i })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText("2 of 3 uploaded")).toBeVisible();
+    await expect(page.getByText(/1 failed/)).toBeVisible();
+
+    // Stop failing the second file, then retry
+    failedNames.clear();
+    const callsBefore = uploadCalls;
+    await page.getByRole("button", { name: /retry failed/i }).click();
+
+    // Only the failed one should be retried (not the two that already succeeded)
+    await expect.poll(() => uploadCalls - callsBefore, { timeout: 10_000 }).toBe(1);
+    await expect(page.getByText("3 of 3 uploaded")).toBeVisible();
+  });
+});
