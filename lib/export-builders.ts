@@ -181,7 +181,10 @@ function writeInkoopSheet(workbook: ExcelJS.Workbook, invoices: InvoiceExportRow
     const datum     = inv.date ? new Date(`${inv.date}T00:00:00`) : null;
     const totalIncl = Number(inv.total_amount ?? 0);
     const party     = inv.supplier_name || inv.client_name || null;
-    const relatieCode = inv.relatie_code && inv.relatie_code.trim() !== "" ? inv.relatie_code : boekstuk;
+    // Coerce to string so a numeric DB value can't crash .trim(); fall back to
+    // the per-invoice boekstuk when no supplier was matched in attachRelatieCodes.
+    const codeStr     = inv.relatie_code == null ? "" : String(inv.relatie_code).trim();
+    const relatieCode = codeStr !== "" ? codeStr : boekstuk;
     const bd        = readVatBreakdown(inv);
 
     inkoopRowSpecs(bd, totalIncl).forEach((spec) => {
@@ -370,7 +373,10 @@ function writeVerkoopSheet(workbook: ExcelJS.Workbook, invoices: InvoiceExportRo
     const datum     = inv.date ? new Date(`${inv.date}T00:00:00`) : null;
     const totalIncl = Number(inv.total_amount ?? 0);
     const party     = inv.client_name || null;
-    const relatieCode = inv.relatie_code && inv.relatie_code.trim() !== "" ? inv.relatie_code : boekstuk;
+    // Coerce to string so a numeric DB value can't crash .trim(); fall back to
+    // the per-invoice boekstuk when no supplier was matched in attachRelatieCodes.
+    const codeStr     = inv.relatie_code == null ? "" : String(inv.relatie_code).trim();
+    const relatieCode = codeStr !== "" ? codeStr : boekstuk;
 
     const rawExt = (inv.raw_extraction as Record<string, unknown>) ?? {};
     const rawVat = Number(rawExt.vat_rate ?? rawExt.btw_percentage ?? 21);

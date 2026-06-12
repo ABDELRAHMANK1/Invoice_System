@@ -32,18 +32,57 @@ function significantTokens(value: string | null | undefined): string[] {
 }
 
 /**
+ * Levenshtein edit distance between two strings.
+ * Used to forgive minor OCR/extraction typos in supplier-name matching
+ * (e.g. AI reads "Alaseel" when the DB has "Alseel" — one insertion).
+ */
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  const prev: number[] = new Array(b.length + 1);
+  const curr: number[] = new Array(b.length + 1);
+  for (let j = 0; j <= b.length; j += 1) prev[j] = j;
+  for (let i = 1; i <= a.length; i += 1) {
+    curr[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;
+      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+    }
+    for (let j = 0; j <= b.length; j += 1) prev[j] = curr[j];
+  }
+  return prev[b.length];
+}
+
+/**
+ * Two tokens are "similar" when they are either equal or within a small edit
+ * distance, where the tolerated distance scales with token length so that
+ * short tokens stay strict (avoids matching "BV" to "BB") but longer names
+ * can absorb one or two character OCR mistakes.
+ */
+function tokenSimilar(t1: string, t2: string): boolean {
+  if (t1 === t2) return true;
+  const minLen = Math.min(t1.length, t2.length);
+  if (minLen < 4) return false;
+  const allowed = minLen >= 8 ? 2 : 1;
+  return levenshtein(t1, t2) <= allowed;
+}
+
+/**
  * Score how well a DB supplier name matches an invoice supplier_name.
- * Returns the count of significant token overlaps (case-insensitive),
- * with a small bonus when either side fully contains the other as a substring.
- * Zero = no match.
+ * Counts overlapping significant tokens (with edit-distance tolerance), plus
+ * a small bonus when either normalised name fully contains the other as a
+ * substring. Zero = no match.
  */
 function scoreMatch(supplierName: string, invoiceSupplier: string): number {
-  const dbTokens  = new Set(significantTokens(supplierName));
+  const dbTokens  = significantTokens(supplierName);
   const invTokens = significantTokens(invoiceSupplier);
-  if (dbTokens.size === 0 || invTokens.length === 0) return 0;
+  if (dbTokens.length === 0 || invTokens.length === 0) return 0;
 
   let overlap = 0;
-  for (const t of invTokens) if (dbTokens.has(t)) overlap += 1;
+  for (const t of invTokens) {
+    if (dbTokens.some((db) => tokenSimilar(db, t))) overlap += 1;
+  }
 
   const dbNorm  = normaliseName(supplierName);
   const invNorm = normaliseName(invoiceSupplier);
