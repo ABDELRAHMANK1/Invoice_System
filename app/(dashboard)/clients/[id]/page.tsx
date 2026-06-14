@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { Icon, I } from "@/app/components/Icon";
@@ -235,6 +235,185 @@ function SupplierModal({ clientId, supplier, open, onClose, onSaved }: SupplierM
   );
 }
 
+/* ── Import suppliers from Excel modal ──────────────────────────── */
+
+interface ImportResult {
+  inserted: number;
+  skipped: number;
+  total_rows: number;
+  detected_columns?: string[];
+  skipped_rows?: Array<{ row: number; reason: string }>;
+  warnings?: Array<{ row: number; reason: string }>;
+}
+
+interface ImportModalProps {
+  clientId: string;
+  open: boolean;
+  onClose: () => void;
+  onImported: () => void;
+}
+
+function ImportSuppliersModal({ clientId, open, onClose, onImported }: ImportModalProps) {
+  const { toast } = useToast();
+  const [file, setFile] = useState<File | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<ImportResult | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) {
+      setFile(null);
+      setError(null);
+      setResult(null);
+      setLoading(false);
+    }
+    function onKey(e: KeyboardEvent) { if (e.key === "Escape" && open && !loading) onClose(); }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, onClose, loading]);
+
+  useEffect(() => {
+    if (open) dialogRef.current?.querySelector<HTMLElement>("button")?.focus();
+  }, [open]);
+
+  async function handleImport() {
+    if (!file) { setError("Pick a .xlsx file first"); return; }
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch(`/api/clients/${clientId}/suppliers/bulk`, { method: "POST", body: form });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `${res.status}`);
+      setResult(data);
+      if (data.inserted > 0) {
+        toast(`Imported ${data.inserted} supplier${data.inserted === 1 ? "" : "s"}`, "success");
+        onImported();
+      } else if (data.skipped > 0) {
+        toast(`No new suppliers — ${data.skipped} already existed`, "info");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Import failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  if (!open) return null;
+
+  return (
+    <div className="modal-backdrop" onClick={loading ? undefined : onClose}>
+      <div
+        ref={dialogRef}
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Import suppliers from Excel"
+        onClick={(e) => e.stopPropagation()}
+        style={{ maxWidth: 520 }}
+      >
+        <div className="modal-head">
+          <div className="modal-title">
+            <Icon d={I.excel} size={16} />
+            Import suppliers from Excel
+          </div>
+          <button className="iconbtn" onClick={onClose} aria-label="Close" disabled={loading}>
+            <Icon d={I.x} size={14} />
+          </button>
+        </div>
+
+        <p className="modal-sub">
+          Upload a .xlsx file. The first row must contain column headers — at minimum a column called <strong>Name</strong> (or Naam) and a column called <strong>Relatie Code</strong> (or Code). Optional columns: Address, Postcode, City, KvK, BTW, IBAN, Email, Phone, Payment days. Duplicates (same name for this client) are skipped automatically.
+        </p>
+
+        <div className="form-group">
+          <label className="form-label">File <span className="req">*</span></label>
+          <div
+            className={`file-drop${file ? " has-file" : ""}`}
+            onClick={() => !loading && fileInputRef.current?.click()}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => e.key === "Enter" && !loading && fileInputRef.current?.click()}
+            aria-label="Click to select Excel file"
+            style={{ opacity: loading ? 0.6 : 1, cursor: loading ? "not-allowed" : "pointer" }}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".xlsx"
+              onChange={(e) => { setFile(e.target.files?.[0] ?? null); setError(null); setResult(null); }}
+              style={{ display: "none" }}
+              disabled={loading}
+            />
+            <Icon d={I.file} size={20} />
+            {file ? (
+              <span>{file.name} ({(file.size / 1024).toFixed(0)} KB)</span>
+            ) : (
+              <span>Click to select an .xlsx file</span>
+            )}
+          </div>
+        </div>
+
+        {result && (
+          <div style={{
+            background: "var(--surface-2, rgba(0,0,0,0.03))",
+            border: "1px solid var(--line)",
+            borderRadius: 8,
+            padding: 12,
+            marginBottom: 12,
+            fontSize: 12.5,
+          }}>
+            <div style={{ fontWeight: 500, marginBottom: 6 }}>
+              <span style={{ color: "#1f8a5b" }}>{result.inserted}</span> inserted
+              {result.skipped > 0 && <> · <span style={{ color: "var(--muted)" }}>{result.skipped} skipped</span></>}
+              {" · "}
+              <span style={{ color: "var(--muted)" }}>{result.total_rows} total rows</span>
+            </div>
+            {result.detected_columns && result.detected_columns.length > 0 && (
+              <div style={{ color: "var(--muted)", marginBottom: 6 }}>
+                Detected columns: {result.detected_columns.join(", ")}
+              </div>
+            )}
+            {result.skipped_rows && result.skipped_rows.length > 0 && (
+              <details style={{ marginTop: 4 }}>
+                <summary style={{ cursor: "pointer", color: "var(--muted)" }}>
+                  Show {result.skipped_rows.length} skipped row{result.skipped_rows.length === 1 ? "" : "s"}
+                </summary>
+                <ul style={{ margin: "6px 0 0 14px", padding: 0, color: "var(--muted)" }}>
+                  {result.skipped_rows.slice(0, 50).map((r, i) => (
+                    <li key={i}>Row {r.row}: {r.reason}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+        )}
+
+        {error && <div className="modal-error"><Icon d={I.alert} size={13} />{error}</div>}
+
+        <div className="modal-foot">
+          <button className="btn" onClick={onClose} disabled={loading}>
+            {result && result.inserted > 0 ? "Close" : "Cancel"}
+          </button>
+          {(!result || result.inserted === 0) && (
+            <button
+              className="btn primary"
+              onClick={handleImport}
+              disabled={loading || !file}
+            >
+              {loading ? <><span className="spinner-sm" /> Importing…</> : <><Icon d={I.upload} size={13} /> Import</>}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Client detail page ──────────────────────────────────────────── */
 
 export default function ClientDetailPage() {
@@ -249,6 +428,7 @@ export default function ClientDetailPage() {
   const [saving, setSaving]     = useState(false);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [supplierModal, setSupplierModal] = useState<{ open: boolean; editing: Supplier | null }>({ open: false, editing: null });
+  const [importOpen, setImportOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -442,9 +622,14 @@ export default function ClientDetailPage() {
               {suppliers.length} supplier{suppliers.length === 1 ? "" : "s"}
             </div>
           </div>
-          <button className="btn primary" onClick={openAddSupplier}>
-            <Icon d={I.users} size={13} /> Add supplier
-          </button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn" onClick={() => setImportOpen(true)} title="Import suppliers from .xlsx">
+              <Icon d={I.excel} size={13} /> Import Excel
+            </button>
+            <button className="btn primary" onClick={openAddSupplier}>
+              <Icon d={I.users} size={13} /> Add supplier
+            </button>
+          </div>
         </div>
 
         {suppliers.length === 0 ? (
@@ -495,6 +680,13 @@ export default function ClientDetailPage() {
         open={supplierModal.open}
         onClose={closeSupplierModal}
         onSaved={onSupplierSaved}
+      />
+
+      <ImportSuppliersModal
+        clientId={clientId}
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImported={load}
       />
     </main>
   );
