@@ -35,8 +35,59 @@ app = FastAPI(title="Oranji PDF Service", version="2026.06.14")
 
 # ── PDF → image ──────────────────────────────────────────────────────────────
 
-def _render_pdf_first_page_to_png(pdf_bytes: bytes) -> bytes:
-    """Return PNG bytes for the first page of a PDF, rendered at ~200 DPI."""
+# 300 DPI (was 200) — sharper glyphs help GPT-4o vision / OCR on scanned PDFs.
+_RENDER_DPI = 300
+# Contrast multiplier applied before returning, to lift faded scans.
+_CONTRAST_FACTOR = 1.5
+# Below this fraction of non-white pixels a page is treated as blank/low-content.
+_BLANK_CONTENT_THRESHOLD = 0.005
+
+
+def _render_page_png(page, dpi: int = _RENDER_DPI) -> bytes:
+    import fitz  # PyMuPDF (already imported by caller; re-import is cached)
+    matrix = fitz.Matrix(dpi / 72.0, dpi / 72.0)
+    pix = page.get_pixmap(matrix=matrix, alpha=False)
+    return pix.tobytes("png")
+
+
+def _content_fraction(png_bytes: bytes) -> float:
+    """Fraction of non-white pixels — a cheap blank/low-content detector.
+
+    Returns 1.0 (assume content) if Pillow is unavailable, so detection never
+    blocks a render.
+    """
+    try:
+        from PIL import Image
+    except ImportError:  # pragma: no cover
+        return 1.0
+    gray = Image.open(io.BytesIO(png_bytes)).convert("L")
+    hist = gray.histogram()
+    total = sum(hist) or 1
+    non_white = sum(hist[:245])  # darker than near-white ⇒ ink / text
+    return non_white / total
+
+
+def _enhance_png(png_bytes: bytes) -> bytes:
+    """Boost contrast for crisper text. No-op if Pillow isn't installed."""
+    try:
+        from PIL import Image, ImageEnhance, ImageOps
+    except ImportError:  # pragma: no cover
+        return png_bytes
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    img = ImageOps.autocontrast(img, cutoff=1)          # normalise faded scans
+    img = ImageEnhance.Contrast(img).enhance(_CONTRAST_FACTOR)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _render_pdf_to_png(pdf_bytes: bytes) -> bytes:
+    """Render an invoice PDF page to a contrast-enhanced PNG at 300 DPI.
+
+    Uses page 1 normally, but if page 1 comes back blank/low-content (a common
+    scanner artefact: a cover or empty first sheet) it falls back to the page
+    with the most ink among the first two.
+    """
     try:
         import fitz  # PyMuPDF
     except ImportError as e:  # pragma: no cover
@@ -56,11 +107,17 @@ def _render_pdf_first_page_to_png(pdf_bytes: bytes) -> bytes:
         raise HTTPException(status_code=400, detail="PDF has no pages")
 
     try:
-        page = doc.load_page(0)
-        # 200 DPI = scale 200/72 ≈ 2.78× — good legibility for OCR / AI vision.
-        matrix = fitz.Matrix(200 / 72.0, 200 / 72.0)
-        pix = page.get_pixmap(matrix=matrix, alpha=False)
-        return pix.tobytes("png")
+        png = _render_page_png(doc.load_page(0))
+        frac = _content_fraction(png)
+        if frac < _BLANK_CONTENT_THRESHOLD and doc.page_count > 1:
+            logger.info(
+                "[pdf-to-image] page 1 looks blank (%.3f%% ink) — trying page 2",
+                frac * 100,
+            )
+            png2 = _render_page_png(doc.load_page(1))
+            if _content_fraction(png2) > frac:
+                png = png2
+        return _enhance_png(png)
     finally:
         doc.close()
 
@@ -79,7 +136,7 @@ async def pdf_to_image(
     if not pdf_bytes:
         raise HTTPException(status_code=400, detail="Empty request body")
 
-    png_bytes = _render_pdf_first_page_to_png(pdf_bytes)
+    png_bytes = _render_pdf_to_png(pdf_bytes)
     b64 = base64.b64encode(png_bytes).decode("ascii")
     return {"image": b64, "format": "png", "size_bytes": len(png_bytes)}
 

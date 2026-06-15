@@ -50,8 +50,12 @@ Source-controlled mirror at `pdf-service/` in this repo. Live copy at
 - **`POST /parse-invoice`** — multipart form, field `text`. Returns the
   invoice dict (see below). Side note: this is rule-based, no LLM calls.
 - **`POST /pdf-to-image`** — multipart `file` OR raw `application/pdf` body.
-  Renders page 1 at ~200 DPI with PyMuPDF, returns
-  `{"image": "<base64 PNG>", "format": "png", "size_bytes": N}`.
+  Renders at **300 DPI** with PyMuPDF, autocontrast + 1.5× contrast boost
+  (Pillow) for crisper scans, and returns
+  `{"image": "<base64 PNG>", "format": "png", "size_bytes": N}`. Normally
+  page 1, but if page 1 is blank/low-content (`< 0.5%` non-white pixels) it
+  falls back to the higher-ink page among the first two. Pillow steps degrade
+  gracefully to a plain render if Pillow is ever missing.
 - **`GET /health`** — liveness, returns `{"status": "ok"}`.
 
 ### `/parse-invoice` response shape
@@ -143,6 +147,10 @@ These run only when `try_arithmetic` defers.
 7. **SAFE** (`try_safe`) — inline `BTW <rate>% <vat> <net>` rows, e.g.
    `BTW 9%  € 14,54  € 161,55`. Note SAFE lists **vat before net**; the two
    amounts must be on the same line so a row can't swallow a `Totaal` below it.
+   - **SAFE summary** (`try_safe_basis`) — the labelled form
+     `BTW 9%  € 22,40  Basis bedrag BTW € 248,85` (vat after the rate, net after
+     the `Basis bedrag BTW` label). `try_safe` can't match it (words sit between
+     the amounts), so this is the safety net for when arithmetic defers.
 8. **S&F / Sunflower** (`try_sunflower`) — `net → rate% → vat (→ total)` row,
    space- or `|`-delimited: `€ 24,90  9%  € 2,24  € 27,14`. Net is the number
    before the rate, vat the one after.

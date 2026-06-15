@@ -490,6 +490,38 @@ def try_deniz(text: str, bd: dict) -> bool:
     return hit
 
 
+# Pattern 8b — SAFE summary table with an explicit "Basis bedrag BTW" label:
+#   "BTW 9%  € 22,40  Basis bedrag BTW € 248,85"  ↦  vat_9 = 22,40, net_9 = 248,85
+# vat sits right after the rate, net after the label. try_safe (below) can't
+# match this because words sit between the two amounts; this is the safety net
+# for SAFE invoices when arithmetic defers (e.g. line-item noise + OCR drift).
+SAFE_BASIS_ROW = re.compile(
+    r"BTW\s+(\d{1,2})\s*%[^\d]*([\d][\d.,]*)[^\d]*?"
+    r"Basis\s*bedrag\s*BTW[^\d]*([\d][\d.,]*)",
+    re.IGNORECASE,
+)
+
+
+def try_safe_basis(text: str, bd: dict) -> bool:
+    hit = False
+    for m in SAFE_BASIS_ROW.finditer(text):
+        rate = int(m.group(1))
+        vat = parse_number(m.group(2))
+        net = parse_number(m.group(3))
+        if net <= 0:
+            continue
+        if rate == 9:
+            bd["net_9"], bd["vat_9"] = trunc_2(net), trunc_2(vat)
+            hit = True
+        elif rate == 21:
+            bd["net_21"], bd["vat_21"] = trunc_2(net), trunc_2(vat)
+            hit = True
+        elif rate == 0:
+            bd["net_0"] = trunc_2(net)
+            hit = True
+    return hit
+
+
 # Pattern 8 — SAFE: one inline row per rate, "BTW <rate>% <vat> <net>".
 #   "BTW 9%  € 14,54  € 161,55"   ↦  vat_9 = 14,54, net_9 = 161,55
 # The two amounts must sit on the same line (no newline in the separator) so
@@ -770,6 +802,8 @@ def extract_vat_breakdown(text: str, total_amount: float) -> dict:
     if try_tunnel(text, total_amount, bd):
         return bd
     if try_deniz(text, bd):
+        return bd
+    if try_safe_basis(text, bd):
         return bd
     if try_safe(text, bd):
         return bd
