@@ -579,8 +579,148 @@ def try_aras(text: str, bd: dict) -> bool:
     return True
 
 
+# ── Arithmetic-first VAT detection ────────────────────────────────────────────
+#
+# Runs BEFORE the supplier-specific patterns below. Rather than matching a known
+# layout it reasons from the numbers themselves: a (net, vat) pair is valid when
+# vat ≈ net × rate (9% or 21%) within 2%. This generalises to invoice layouts
+# that have no bespoke pattern. If it can't find a confident result it returns
+# False and the existing patterns (1-N) run completely unchanged.
+
+_NUM_RE = re.compile(r"[-+]?\d[\d.,]*")
+
+# Phrases that introduce the pre-VAT (net / taxable-base) amount.
+_SUBTOTAL_KEYWORDS = (
+    r"totaal\s*ex\s*btw",
+    r"sub-?totaal",
+    r"nettobedrag",
+    r"belastbaar\s*basis",
+    r"basis\s*bedrag\s*btw",
+    r"grondslag",
+    r"bedrag\s*excl",
+    r"totaal\s*excl",
+    r"excl\.?\s*btw",
+)
+
+# Phrases that introduce the grand total (incl. VAT). Generic "totaal" is last
+# so the more specific phrases win first.
+_TOTAL_KEYWORDS = (
+    r"totaalbedrag\s*incl",
+    r"totaal\s*incl",
+    r"totaal\s*te\s*betalen",
+    r"totaal\s*in\s*euro",
+    r"reeds\s*voldaan",
+    r"te\s*betalen",
+    r"totaal",
+)
+
+
+def _numbers_with_pos(text: str) -> list:
+    return [(m.start(), parse_number(m.group(0))) for m in _NUM_RE.finditer(text)]
+
+
+def _amount_after(text: str, patterns) -> Optional[float]:
+    """First positive number within 40 chars after the earliest matching label."""
+    best_pos, best_val = None, None
+    for pat in patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if not m:
+            continue
+        nm = _NUM_RE.search(text[m.end(): m.end() + 40])
+        if nm:
+            v = parse_number(nm.group(0))
+            if v > 0 and (best_pos is None or m.start() < best_pos):
+                best_pos, best_val = m.start(), v
+    return best_val
+
+
+def _rate_pairs(nums: list, rate: int, tol: float = 0.02) -> list:
+    """All (rel_error, net_pos, vat_pos, net, vat) with vat ≈ net×rate within tol."""
+    out = []
+    for npos, net in nums:
+        if net <= 0:
+            continue
+        expected = net * rate / 100.0
+        if expected <= 0:
+            continue
+        for vpos, vat in nums:
+            if vpos == npos or vat <= 0:
+                continue
+            if abs(vat - expected) <= max(0.02, expected * tol):
+                out.append((abs(vat - expected) / expected, npos, vpos, net, vat))
+    out.sort()
+    return out
+
+
+def try_arithmetic(text: str, total_amount: float, bd: dict) -> bool:
+    nums = _numbers_with_pos(text)
+    if len(nums) < 2:
+        return False
+
+    # STEP 1 — scan every number pair for a net×rate relationship and choose at
+    # most one pair per rate. With a known total, prefer the combination whose
+    # net+vat sum lands closest to it; otherwise prefer the tightest fits.
+    cand9 = [None] + _rate_pairs(nums, 9)[:6]
+    cand21 = [None] + _rate_pairs(nums, 21)[:6]
+    best, best_score = None, None
+    for p9 in cand9:
+        for p21 in cand21:
+            if p9 is None and p21 is None:
+                continue
+            used, s, err, ok = set(), 0.0, 0.0, True
+            for p in (p9, p21):
+                if p is None:
+                    continue
+                _, npos, vpos, net, vat = p
+                if npos in used or vpos in used:
+                    ok = False
+                    break
+                used.update((npos, vpos))
+                s += net + vat
+                err += p[0]
+            if not ok:
+                continue
+            score = abs(s - total_amount) if total_amount > 0 else err
+            if best_score is None or score < best_score:
+                best_score, best = score, (p9, p21, s)
+
+    if best is not None:
+        p9, p21, s = best
+        # Confidence gate: when the total is known the chosen pairs must explain
+        # it (within 1% / 5¢). If they fall short a 0%/emballage row is missing,
+        # so defer to the real supplier pattern rather than report a partial.
+        if total_amount <= 0 or abs(s - total_amount) <= max(0.05, total_amount * 0.01):
+            if p9 is not None:
+                bd["net_9"], bd["vat_9"] = trunc_2(p9[3]), trunc_2(p9[4])
+            if p21 is not None:
+                bd["net_21"], bd["vat_21"] = trunc_2(p21[3]), trunc_2(p21[4])
+            return True
+
+    # STEP 2 — no explicit pair. If we know the total and can find a subtotal /
+    # net amount, infer the VAT and its rate from the difference.
+    if total_amount <= 0:
+        total_amount = _amount_after(text, _TOTAL_KEYWORDS) or 0.0
+    if total_amount > 0:
+        subtotal = _amount_after(text, _SUBTOTAL_KEYWORDS)
+        if subtotal and 0 < subtotal < total_amount:
+            vat = total_amount - subtotal
+            rate = round(vat / subtotal * 100)
+            if abs(rate - 9) <= 1:
+                bd["net_9"], bd["vat_9"] = trunc_2(subtotal), trunc_2(vat)
+                return True
+            if abs(rate - 21) <= 2:
+                bd["net_21"], bd["vat_21"] = trunc_2(subtotal), trunc_2(vat)
+                return True
+
+    # STEP 3 — nothing confident; fall through to the supplier patterns.
+    return False
+
+
 def extract_vat_breakdown(text: str, total_amount: float) -> dict:
     bd = _empty_breakdown()
+    # Arithmetic-first: try to reason from the numbers before any layout match.
+    if try_arithmetic(text, total_amount, bd):
+        return bd
     # Order matters — most-specific first.
     if try_mixfood(text, bd):
         return bd

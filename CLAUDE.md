@@ -77,7 +77,41 @@ Source-controlled mirror at `pdf-service/` in this repo. Live copy at
 `supplier_name` and `client_name` are **always null** here — they're produced
 by the AI extraction step in n8n and merged in later.
 
+### VAT extraction — arithmetic-first, then patterns
+
+`extract_vat_breakdown` runs **`try_arithmetic` first**, and only falls through
+to the supplier-specific patterns below when it can't find a confident result
+(it returns `False`, leaving the breakdown untouched). The patterns are
+unchanged — arithmetic is an additional front layer, not a replacement.
+
+**`try_arithmetic`** reasons from the numbers themselves instead of matching a
+layout:
+
+- **Step 1 — pair scan.** Across *every* number in the text, a `(net, vat)` pair
+  is valid when `vat ≈ net × rate` for rate ∈ {9, 21} within 2%. It picks at
+  most one pair per rate; when a total is known it chooses the combination whose
+  `net+vat` sum lands closest to it, else the tightest-fitting pairs.
+  - **Confidence gate**: with a known total, the chosen pairs must explain it
+    (within 1% / 5¢). If they fall short — e.g. a 0%/emballage row is missing
+    (Mix Food) or the net isn't printed as a literal (Tunnel computes it as
+    `total − vat`) — arithmetic **defers** so the real pattern handles it.
+  - With no total label (Sunflower inline, Aras, Deniz) the gate is skipped and
+    the total is later filled by the reconciliation step below.
+- **Step 2 — subtotal inference.** No pair found but a total + a subtotal/net
+  amount exist → `VAT = total − subtotal`, `rate = round(VAT/subtotal×100)`,
+  filed under 9% (±1) or 21% (±2). Subtotal keywords: `totaal ex btw`,
+  `sub-totaal`, `nettobedrag`, `belastbaar basis`, `basis bedrag btw`,
+  `grondslag`, `bedrag excl`, `totaal excl`, `excl. btw`. Total keywords:
+  `totaalbedrag incl`, `totaal incl`, `totaal te betalen`, `totaal in euro`,
+  `reeds voldaan`, `te betalen`, `totaal` (generic last).
+- **Step 3** — nothing confident → fall through to the patterns.
+
+Net is always the larger number, vat the smaller, so arithmetic is layout- and
+order-agnostic (it handles SAFE's vat-before-net rows without caring about order).
+
 ### Supported VAT patterns (`invoice_parser.py`)
+
+These run only when `try_arithmetic` defers.
 
 1. **Mix Food** — triplet rows: `0,00 10,80 0,0000` / `9,00 247,81 22,3029` / `21,00 73,55 15,4455`.
 2. **Base N% VAT (general)** — `try_base_vat`, handles BOTH layouts:
