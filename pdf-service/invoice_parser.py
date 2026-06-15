@@ -268,6 +268,73 @@ def try_mixfood(text: str, bd: dict) -> bool:
     return hit
 
 
+# Pattern 3a — General "Base N% VAT" handler covering BOTH label/amount layouts.
+#
+#   Normal   layout:  "Base 21% VAT: € 46.34"          (label → amount)
+#   Reversed layout:  "€ 46.34Base 21% VAT:"           (amount → label)
+#
+# Reversed invoices glue the net amount directly in front of the "Base N% VAT:"
+# label, and scatter the VAT amounts on later lines that no longer sit right
+# after their "VAT N%:" label (e.g. "VAT 21%:\n€ 1,091.67\n€ 94.11 € 9.73").
+# Grabbing the number "after VAT N%:" therefore fails. Instead we recover each
+# net deterministically (the number adjacent to its Base label) and then pick
+# the VAT amount by an arithmetic cross-check: among every number in the text,
+# the one closest to net × rate is the VAT for that rate.
+_BASE_VAT_LABELS = (
+    ("net_21", "vat_21", r"Base\s+21\s*%\s*VAT[:.]?", 21),
+    ("net_9",  "vat_9",  r"Base\s+9\s*%\s*VAT[:.]?",  9),
+)
+
+
+def _all_numbers(text: str) -> list[float]:
+    return [parse_number(m.group(0)) for m in re.finditer(r"[-+]?\d[\d.,]*", text)]
+
+
+def _closest_number(candidates: Iterable[float], target: float) -> Optional[float]:
+    """The candidate nearest `target`, accepted only if within a small tolerance."""
+    best, best_diff = None, None
+    for c in candidates:
+        d = abs(c - target)
+        if best_diff is None or d < best_diff:
+            best, best_diff = c, d
+    if best is None:
+        return None
+    # Tolerance scales with the target so cent-level OCR drift on a four-figure
+    # net (94.08 vs 94.11) is still accepted, while garbage is rejected.
+    if best_diff <= max(0.5, target * 0.05):
+        return best
+    return None
+
+
+def try_base_vat(text: str, bd: dict) -> bool:
+    if not re.search(r"Base\s+\d+\s*%\s*VAT", text, re.IGNORECASE):
+        return False
+    # Reversed layout signalled by a digit glued (no space) right before "Base".
+    reversed_layout = bool(re.search(r"\d[€$£]?Base\s*\d+\s*%", text, re.IGNORECASE))
+    all_nums = _all_numbers(text)
+    hit = False
+    for net_field, vat_field, label, rate in _BASE_VAT_LABELS:
+        m = re.search(label, text, re.IGNORECASE)
+        if not m:
+            continue
+        if reversed_layout:
+            # Net is the trailing number immediately before the label.
+            bm = re.search(r"([-+]?\d[\d.,]*)\s*$", text[: m.start()])
+            net = parse_number(bm.group(1)) if bm else None
+        else:
+            # Net is the first number after the label.
+            am = re.search(r"[-+]?\d[\d.,]*", text[m.end(): m.end() + 40])
+            net = parse_number(am.group(0)) if am else None
+        if net is None or net <= 0:
+            continue
+        bd[net_field] = trunc_2(net)
+        hit = True
+        vat = _closest_number(all_nums, net * rate / 100.0)
+        if vat is not None:
+            bd[vat_field] = trunc_2(vat)
+    return hit
+
+
 # Pattern 3 — Alaseel: "Base 9% VAT: € 1,045.33 / VAT 9%: € 94.11" etc.
 # Stop words prevent "Total EX VAT: 1,091.67" bleeding into the wrong field.
 _ALASEEL_STOPS = ("Base", "VAT", "Total", "Amount", "PRIJS")
@@ -346,6 +413,8 @@ def extract_vat_breakdown(text: str, total_amount: float) -> dict:
     bd = _empty_breakdown()
     # Order matters — most-specific first.
     if try_mixfood(text, bd):
+        return bd
+    if try_base_vat(text, bd):
         return bd
     if try_alaseel(text, bd):
         return bd

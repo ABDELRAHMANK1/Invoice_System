@@ -80,10 +80,20 @@ by the AI extraction step in n8n and merged in later.
 ### Supported VAT patterns (`invoice_parser.py`)
 
 1. **Mix Food** — triplet rows: `0,00 10,80 0,0000` / `9,00 247,81 22,3029` / `21,00 73,55 15,4455`.
-2. **Alaseel** — English labels: `Base 9% VAT: € X / VAT 9%: € Y`. Uses
-   stop-word-bounded windows so `Total EX VAT` doesn't bleed in.
-3. **Jan de Geus** — Dutch hoog/laag: `Artikel laag X / BTW laag Y`.
-4. **Tunnel/toll receipt** — single rate + total: `BTW (21,00%): X / PRIJS INCL: Y`.
+2. **Base N% VAT (general)** — `try_base_vat`, handles BOTH layouts:
+   - Normal: `Base 21% VAT: € 46.34` (label → amount).
+   - Reversed: `€ 46.34Base 21% VAT:` (amount → label) — detected when a digit
+     is glued directly in front of `Base`; net is then the number *before* the
+     label, not after it.
+   Each net is read deterministically from its `Base N% VAT` label; the matching
+   VAT amount is then chosen by **arithmetic cross-check** — among every number
+   in the text, the one closest to `net × rate` (within `max(0.5, target×5%)`).
+   This is needed because reversed invoices scatter the VAT amounts away from
+   their `VAT N%:` labels. Runs *before* the older Alaseel pass.
+3. **Alaseel** — English labels via stop-word-bounded windows so `Total EX VAT`
+   doesn't bleed in. Now largely superseded by #2; kept as a fallback.
+4. **Jan de Geus** — Dutch hoog/laag: `Artikel laag X / BTW laag Y`.
+5. **Tunnel/toll receipt** — single rate + total: `BTW (21,00%): X / PRIJS INCL: Y`.
 
 VAT rate normalisation: anything not in `{0, 9, 21}` → `0`.
 
