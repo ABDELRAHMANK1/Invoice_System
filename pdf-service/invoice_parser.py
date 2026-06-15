@@ -192,7 +192,9 @@ TOTAL_LABELS = (
     r"Amount\s+Incl(?:\.|usive)?\s*VAT",
     r"Total\s+EUR\s+Incl(?:\.|usive)?\s*VAT",
     r"Total\s+Incl(?:\.|usive)?\s*VAT",
-    r"Totaal\s+incl\.?\s*BTW",
+    r"Totaal\s+incl\.?\s*BTW",        # also matches "TOTAAL Incl.BTW: 765,13 EUR"
+    r"Totaal\s+te\s+betalen",         # MOCCA: "totaal te betalen EU 196,52"
+    r"Totaal\s+in\s+euro",            # SAFE: "Totaal in euro: € 176,09"
     r"FACTUURBEDRAG",
     r"Factuurbedrag",
     r"PRIJS\s+INCL",
@@ -409,6 +411,174 @@ def try_tunnel(text: str, total_amount: float, bd: dict) -> bool:
     return True
 
 
+# Pattern 5 — MOCCA: invoice gives only the rolled-up "ex BTW" net and total
+# BTW, no per-rate breakdown:
+#   "totaal ex btw: 180,30" / "totaal btw: 16,22" / "totaal te betalen: 196,52"
+# Infer the rate from the ratio and file the pair under net_9/vat_9 or
+# net_21/vat_21 accordingly.
+_MOCCA_STOPS = ("totaal", "te", "btw")
+
+
+def try_mocca(text: str, bd: dict) -> bool:
+    net = number_after_label(text, r"totaal\s+ex\s+btw[:.]?", _MOCCA_STOPS)
+    vat = number_after_label(text, r"totaal\s+btw[:.]?", _MOCCA_STOPS)
+    if net is None or vat is None or net <= 0 or vat <= 0:
+        return False
+    rate = round(vat / net * 100)
+    if abs(rate - 9) <= 1:
+        bd["net_9"], bd["vat_9"] = trunc_2(net), trunc_2(vat)
+    elif abs(rate - 21) <= 2:
+        bd["net_21"], bd["vat_21"] = trunc_2(net), trunc_2(vat)
+    else:
+        return False
+    return True
+
+
+# Pattern 6 — Slagerij Overschie line items: each row carries its own rate,
+#   "HALVE KIP | 15,96 | 9%"  /  "RUNDERLAP | 8,40 | 21%"
+# Sum the amounts per rate. The trailing "N%" disambiguates which net bucket
+# each amount belongs to.
+LINE_ITEM_RATE = re.compile(r"([\d][\d.,]*)\s*\|\s*(\d{1,2})\s*%")
+
+
+def try_slagerij(text: str, bd: dict) -> bool:
+    hit = False
+    for m in LINE_ITEM_RATE.finditer(text):
+        amt = parse_number(m.group(1))
+        rate = int(m.group(2))
+        if amt <= 0:
+            continue
+        if rate == 9:
+            bd["net_9"] = trunc_2(bd["net_9"] + amt)
+            hit = True
+        elif rate == 21:
+            bd["net_21"] = trunc_2(bd["net_21"] + amt)
+            hit = True
+        elif rate == 0:
+            bd["net_0"] = trunc_2(bd["net_0"] + amt)
+            hit = True
+    return hit
+
+
+# Pattern 10 — Deniz Fruit: one row per rate, each carrying its own net/vat/incl
+# behind word labels:
+#   "BTW 9%  Excl. BTW € 37,00  BTW € 3,33  Incl. BTW € 40,33"
+# net = the "Excl. BTW" figure, vat = the bare "BTW" figure after it.
+DENIZ_ROW = re.compile(
+    r"BTW\s+(\d{1,2})\s*%\s*Excl\.?\s*BTW\s*€?\s*([\d][\d.,]*)"
+    r"\s*BTW\s*€?\s*([\d][\d.,]*)",
+    re.IGNORECASE,
+)
+
+
+def try_deniz(text: str, bd: dict) -> bool:
+    hit = False
+    for m in DENIZ_ROW.finditer(text):
+        rate = int(m.group(1))
+        net = parse_number(m.group(2))
+        vat = parse_number(m.group(3))
+        if rate == 9:
+            bd["net_9"], bd["vat_9"] = trunc_2(net), trunc_2(vat)
+            hit = True
+        elif rate == 21:
+            bd["net_21"], bd["vat_21"] = trunc_2(net), trunc_2(vat)
+            hit = True
+        elif rate == 0:
+            if net > 0:
+                bd["net_0"] = trunc_2(net)
+                hit = True
+    return hit
+
+
+# Pattern 8 — SAFE: one inline row per rate, "BTW <rate>% <vat> <net>".
+#   "BTW 9%  € 14,54  € 161,55"   ↦  vat_9 = 14,54, net_9 = 161,55
+# The two amounts must sit on the same line (no newline in the separator) so
+# the row doesn't swallow a "Totaal" figure below it (cf. Aras).
+SAFE_ROW = re.compile(
+    r"BTW\s+(\d{1,2})\s*%[ \t€|:.]*([\d][\d.,]*)[ \t€|:.]+([\d][\d.,]*)",
+    re.IGNORECASE,
+)
+
+
+def try_safe(text: str, bd: dict) -> bool:
+    hit = False
+    for m in SAFE_ROW.finditer(text):
+        rate = int(m.group(1))
+        vat = parse_number(m.group(2))   # SAFE lists vat first, then net
+        net = parse_number(m.group(3))
+        if rate == 9:
+            bd["vat_9"], bd["net_9"] = trunc_2(vat), trunc_2(net)
+            hit = True
+        elif rate == 21:
+            bd["vat_21"], bd["net_21"] = trunc_2(vat), trunc_2(net)
+            hit = True
+        elif rate == 0:
+            if net > 0:
+                bd["net_0"] = trunc_2(net)
+                hit = True
+    return hit
+
+
+# Pattern 7 — S&F / Sunflower: a row laid out net → rate% → vat (→ total incl).
+#   "€ 24,90  9%  € 2,24  € 27,14"   ↦  net_9 = 24,90, vat_9 = 2,24
+#   table form: "€ 24,90 | 9% | € 2,24 | € 27,14"
+# The net is the number before the rate, the vat the number after it. The total
+# (4th cell) is left to the breakdown-sum reconciliation in parse_invoice.
+SUNFLOWER_ROW = re.compile(
+    r"€?\s*([\d][\d.,]*)\s*\|?\s*€?\s*(\d{1,2})\s*%\s*\|?\s*€?\s*([\d][\d.,]*)"
+)
+
+
+def try_sunflower(text: str, bd: dict) -> bool:
+    hit = False
+    for m in SUNFLOWER_ROW.finditer(text):
+        net = parse_number(m.group(1))
+        rate = int(m.group(2))
+        vat = parse_number(m.group(3))
+        if net <= 0:
+            continue
+        if rate == 9:
+            bd["net_9"], bd["vat_9"] = trunc_2(net), trunc_2(vat)
+            hit = True
+        elif rate == 21:
+            bd["net_21"], bd["vat_21"] = trunc_2(net), trunc_2(vat)
+            hit = True
+        elif rate == 0:
+            bd["net_0"] = trunc_2(net)
+            hit = True
+    return hit
+
+
+# Pattern 9 — Aras Patisserie (handwritten): a sub-total line for the net and a
+# single rated BTW line for the vat:
+#   "Sub-totaal: 32,00"  /  "btw 9%: 2,88"  /  "Totaal: 34,88"
+# Gated on the presence of a "Sub-totaal" label so it doesn't poach SAFE rows.
+_ARAS_STOPS = ("btw", "totaal", "sub")
+ARAS_BTW = re.compile(r"btw\s+(\d{1,2})\s*%\s*[:.]?\s*([\d][\d.,]*)", re.IGNORECASE)
+
+
+def try_aras(text: str, bd: dict) -> bool:
+    if not re.search(r"Sub-?totaal", text, re.IGNORECASE):
+        return False
+    m = ARAS_BTW.search(text)
+    if not m:
+        return False
+    rate = int(m.group(1))
+    vat = parse_number(m.group(2))
+    net = number_after_label(text, r"Sub-?totaal[:.]?", _ARAS_STOPS)
+    if net is None or net <= 0:
+        return False
+    if rate == 9:
+        bd["net_9"], bd["vat_9"] = trunc_2(net), trunc_2(vat)
+    elif rate == 21:
+        bd["net_21"], bd["vat_21"] = trunc_2(net), trunc_2(vat)
+    elif rate == 0:
+        bd["net_0"] = trunc_2(net)
+    else:
+        return False
+    return True
+
+
 def extract_vat_breakdown(text: str, total_amount: float) -> dict:
     bd = _empty_breakdown()
     # Order matters — most-specific first.
@@ -421,6 +591,18 @@ def extract_vat_breakdown(text: str, total_amount: float) -> dict:
     if try_jan_de_geus(text, bd):
         return bd
     if try_tunnel(text, total_amount, bd):
+        return bd
+    if try_deniz(text, bd):
+        return bd
+    if try_safe(text, bd):
+        return bd
+    if try_sunflower(text, bd):
+        return bd
+    if try_aras(text, bd):
+        return bd
+    if try_slagerij(text, bd):
+        return bd
+    if try_mocca(text, bd):
         return bd
     return bd
 
@@ -478,6 +660,15 @@ def parse_invoice(text: str) -> dict:
     vat_rate = derive_vat_rate(bd, text)
     if vat_rate not in ALLOWED_VAT_RATES:
         vat_rate = 0
+
+    # Reconcile the total with the breakdown. When no total label was found
+    # (Sunflower inline, Deniz) or a label grabbed a net cell instead of the
+    # grand total (Sunflower table's "Totaalbedrag"), the sum of net+vat across
+    # the breakdown is the reliable figure. Only override upward — a label total
+    # that already exceeds the breakdown means a row is missing, not wrong.
+    breakdown_sum = trunc_2(sum(float(v) for v in bd.values()))
+    if breakdown_sum > total_amount + 0.01:
+        total_amount = breakdown_sum
 
     _check_breakdown_sum(bd, total_amount, invoice_number)
 

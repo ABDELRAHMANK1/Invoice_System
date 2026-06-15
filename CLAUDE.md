@@ -94,8 +94,31 @@ by the AI extraction step in n8n and merged in later.
    doesn't bleed in. Now largely superseded by #2; kept as a fallback.
 4. **Jan de Geus** — Dutch hoog/laag: `Artikel laag X / BTW laag Y`.
 5. **Tunnel/toll receipt** — single rate + total: `BTW (21,00%): X / PRIJS INCL: Y`.
+6. **Deniz Fruit** (`try_deniz`) — one row per rate behind word labels:
+   `BTW 9%  Excl. BTW € 37,00  BTW € 3,33  Incl. BTW € 40,33` (net = Excl. BTW,
+   vat = the bare BTW after it).
+7. **SAFE** (`try_safe`) — inline `BTW <rate>% <vat> <net>` rows, e.g.
+   `BTW 9%  € 14,54  € 161,55`. Note SAFE lists **vat before net**; the two
+   amounts must be on the same line so a row can't swallow a `Totaal` below it.
+8. **S&F / Sunflower** (`try_sunflower`) — `net → rate% → vat (→ total)` row,
+   space- or `|`-delimited: `€ 24,90  9%  € 2,24  € 27,14`. Net is the number
+   before the rate, vat the one after.
+9. **Aras Patisserie** (`try_aras`) — handwritten: `Sub-totaal: 32,00` (net) +
+   `btw 9%: 2,88` (vat). Gated on a `Sub-totaal` label so it can't poach SAFE.
+10. **MOCCA** (`try_mocca`) — rolled-up totals only, no per-rate breakdown:
+    `totaal ex btw: 180,30` / `totaal btw: 16,22`. Rate is inferred from
+    `round(btw/net*100)` and the pair filed under 9% (±1) or 21% (±2).
+11. **Slagerij Overschie** (`try_slagerij`) — per-line items `… | 15,96 | 9%`,
+    summed per rate.
 
 VAT rate normalisation: anything not in `{0, 9, 21}` → `0`.
+
+**Total reconciliation** (`parse_invoice`): after the breakdown is built, if the
+sum of `net+vat` exceeds the label-extracted `total_amount`, the sum wins. This
+recovers the total when no total label fired (Sunflower inline, Deniz) or a
+label grabbed a net cell (Sunflower table's `Totaalbedrag`). It only overrides
+*upward* — a label total already above the breakdown means a row is missing, not
+wrong, so it's left intact.
 
 ### Local tests
 
