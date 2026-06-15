@@ -88,15 +88,24 @@ unchanged — arithmetic is an additional front layer, not a replacement.
 layout:
 
 - **Step 1 — pair scan.** Across *every* number in the text, a `(net, vat)` pair
-  is valid when `vat ≈ net × rate` for rate ∈ {9, 21} within 2%. It picks at
-  most one pair per rate; when a total is known it chooses the combination whose
-  `net+vat` sum lands closest to it, else the tightest-fitting pairs.
-  - **Confidence gate**: with a known total, the chosen pairs must explain it
-    (within 1% / 5¢). If they fall short — e.g. a 0%/emballage row is missing
-    (Mix Food) or the net isn't printed as a literal (Tunnel computes it as
-    `total − vat`) — arithmetic **defers** so the real pattern handles it.
-  - With no total label (Sunflower inline, Aras, Deniz) the gate is skipped and
-    the total is later filled by the reconciliation step below.
+  is valid when `vat ≈ net × rate` for rate ∈ {9, 21} within 2%. It picks the
+  per-rate combination whose `net+vat` sum lands closest to the total.
+  - **Total anchor**: the total used here is `max(labelled total, largest money
+    amount in the text)` — the grand total (incl. VAT) is the biggest euro
+    figure on a normal invoice, so this anchors correctly even when no total
+    *label* was recognised upstream. "Money" = a number written with two
+    decimals; bare quantities, invoice numbers, dates and `N%` rate literals are
+    excluded. **This is what stops line-item pairs (e.g. `88 × 0.09 ≈ 7.95`)
+    being picked over the BTW-summary pair** — the summary pair is the one that
+    actually sums to the total.
+  - **Shortlist**: candidates are the tightest-fitting pairs by error *plus* any
+    pair that on its own nearly explains the total (within 5%), so a correct
+    summary pair is never crowded out of the shortlist by coincidental
+    line-item pairs.
+  - **Confidence gate**: the chosen pairs must explain the total (within 1% /
+    5¢). If they fall short — e.g. a 0%/emballage row is missing (Mix Food) or
+    the net isn't printed as a literal (Tunnel computes it as `total − vat`) —
+    arithmetic **defers** so the real pattern handles it.
 - **Step 2 — subtotal inference.** No pair found but a total + a subtotal/net
   amount exist → `VAT = total − subtotal`, `rate = round(VAT/subtotal×100)`,
   filed under 9% (±1) or 21% (±2). Subtotal keywords: `totaal ex btw`,

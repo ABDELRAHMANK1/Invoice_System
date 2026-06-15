@@ -615,8 +615,23 @@ _TOTAL_KEYWORDS = (
 )
 
 
+def _scan_numbers(text: str) -> list:
+    """(pos, value, is_money) for every number, skipping rate literals like 9%.
+
+    `is_money` flags amounts written with two decimals (e.g. 161,55) so we can
+    tell real euro figures from invoice numbers, dates and bare quantities.
+    """
+    out = []
+    for m in _NUM_RE.finditer(text):
+        if re.match(r"\s*%", text[m.end(): m.end() + 3]):  # a rate, not an amount
+            continue
+        raw = m.group(0)
+        out.append((m.start(), parse_number(raw), bool(re.search(r"[.,]\d{2}$", raw))))
+    return out
+
+
 def _numbers_with_pos(text: str) -> list:
-    return [(m.start(), parse_number(m.group(0))) for m in _NUM_RE.finditer(text)]
+    return [(pos, val) for pos, val, _ in _scan_numbers(text)]
 
 
 def _amount_after(text: str, patterns) -> Optional[float]:
@@ -652,16 +667,37 @@ def _rate_pairs(nums: list, rate: int, tol: float = 0.02) -> list:
     return out
 
 
+def _pair_candidates(pairs: list, total: float, cap: int = 40) -> list:
+    """[None] + the pairs worth combining: tightest-fitting by error, PLUS any
+    pair that on its own (net+vat) nearly explains the total — so a summary-table
+    pair is never crowded out of the shortlist by coincidental line-item pairs."""
+    chosen, seen = [], set()
+    near = [p for p in pairs if total > 0 and abs((p[3] + p[4]) - total) <= total * 0.05]
+    for p in near + pairs[:cap]:
+        key = (p[1], p[2])
+        if key not in seen:
+            seen.add(key)
+            chosen.append(p)
+    return [None] + chosen
+
+
 def try_arithmetic(text: str, total_amount: float, bd: dict) -> bool:
-    nums = _numbers_with_pos(text)
+    scanned = _scan_numbers(text)
+    nums = [(pos, val) for pos, val, _ in scanned]
     if len(nums) < 2:
         return False
 
+    # The grand total (incl. VAT) is the largest euro amount on a normal invoice.
+    # Anchoring on it lets us prefer the BTW-summary pair over coincidental
+    # line-item pairs even when no total *label* was recognised upstream.
+    money_max = max((val for _, val, money in scanned if money), default=0.0)
+    total = max(total_amount, money_max)
+
     # STEP 1 — scan every number pair for a net×rate relationship and choose at
-    # most one pair per rate. With a known total, prefer the combination whose
-    # net+vat sum lands closest to it; otherwise prefer the tightest fits.
-    cand9 = [None] + _rate_pairs(nums, 9)[:6]
-    cand21 = [None] + _rate_pairs(nums, 21)[:6]
+    # most one pair per rate. With a total, prefer the combination whose net+vat
+    # sum lands closest to it; otherwise prefer the tightest fits.
+    cand9 = _pair_candidates(_rate_pairs(nums, 9), total)
+    cand21 = _pair_candidates(_rate_pairs(nums, 21), total)
     best, best_score = None, None
     for p9 in cand9:
         for p21 in cand21:
@@ -680,16 +716,17 @@ def try_arithmetic(text: str, total_amount: float, bd: dict) -> bool:
                 err += p[0]
             if not ok:
                 continue
-            score = abs(s - total_amount) if total_amount > 0 else err
+            # Closest sum to the total wins; relative error breaks ties.
+            score = (abs(s - total), err) if total > 0 else (err, 0.0)
             if best_score is None or score < best_score:
                 best_score, best = score, (p9, p21, s)
 
     if best is not None:
         p9, p21, s = best
-        # Confidence gate: when the total is known the chosen pairs must explain
-        # it (within 1% / 5¢). If they fall short a 0%/emballage row is missing,
-        # so defer to the real supplier pattern rather than report a partial.
-        if total_amount <= 0 or abs(s - total_amount) <= max(0.05, total_amount * 0.01):
+        # Confidence gate: the chosen pairs must explain the total (within 1% /
+        # 5¢). If they fall short a 0%/emballage row is missing, so defer to the
+        # real supplier pattern rather than report a partial breakdown.
+        if total <= 0 or abs(s - total) <= max(0.05, total * 0.01):
             if p9 is not None:
                 bd["net_9"], bd["vat_9"] = trunc_2(p9[3]), trunc_2(p9[4])
             if p21 is not None:
@@ -697,13 +734,13 @@ def try_arithmetic(text: str, total_amount: float, bd: dict) -> bool:
             return True
 
     # STEP 2 — no explicit pair. If we know the total and can find a subtotal /
-    # net amount, infer the VAT and its rate from the difference.
-    if total_amount <= 0:
-        total_amount = _amount_after(text, _TOTAL_KEYWORDS) or 0.0
-    if total_amount > 0:
+    # net amount, infer the VAT and its rate from the difference. Uses a *labelled*
+    # total only (not the money-max heuristic) to keep the subtraction trustworthy.
+    labelled_total = total_amount if total_amount > 0 else (_amount_after(text, _TOTAL_KEYWORDS) or 0.0)
+    if labelled_total > 0:
         subtotal = _amount_after(text, _SUBTOTAL_KEYWORDS)
-        if subtotal and 0 < subtotal < total_amount:
-            vat = total_amount - subtotal
+        if subtotal and 0 < subtotal < labelled_total:
+            vat = labelled_total - subtotal
             rate = round(vat / subtotal * 100)
             if abs(rate - 9) <= 1:
                 bd["net_9"], bd["vat_9"] = trunc_2(subtotal), trunc_2(vat)
