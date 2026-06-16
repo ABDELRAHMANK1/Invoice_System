@@ -14,6 +14,7 @@ const patchSchema = z.object({
   country:      z.string().length(2).optional(),
   btw_number:   z.string().max(50).optional().nullable(),
   kvk_number:   z.string().max(20).optional().nullable(),
+  iban:         z.string().max(50).optional().nullable(),
   relatie_code: z.string().max(50).optional().nullable(),
   notes:        z.string().max(2000).optional().nullable(),
 });
@@ -30,7 +31,17 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     .single();
 
   if (error) return jsonError(error.code === "PGRST116" ? "Client not found" : error.message, error.code === "PGRST116" ? 404 : 500);
-  return NextResponse.json(data);
+
+  // Nest the client's own suppliers so the New-invoice modal can populate its
+  // supplier dropdown from a single fetch. Active first, then by name.
+  const { data: suppliers } = await supabaseAdmin
+    .from("suppliers")
+    .select("*")
+    .eq("client_id", id)
+    .order("active", { ascending: false })
+    .order("name", { ascending: true });
+
+  return NextResponse.json({ ...data, suppliers: suppliers ?? [] });
 }
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {

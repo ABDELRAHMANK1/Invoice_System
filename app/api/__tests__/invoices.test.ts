@@ -10,7 +10,40 @@ const { mockSupabase } = vi.hoisted(() => {
 
 vi.mock("@/lib/supabase-admin", () => ({ supabaseAdmin: mockSupabase }));
 
+// PDF rendering + S3 upload are side effects; stub them so the create test
+// exercises validation + server-side totals without touching pdfkit / AWS.
+vi.mock("@/lib/invoice-pdf", () => ({ buildInvoicePdf: vi.fn(async () => Buffer.from("%PDF-1.4 stub")) }));
+vi.mock("@/lib/storage", () => ({ uploadBuffer: vi.fn(async () => "s3://bucket/generated-invoices/x.pdf") }));
+
 import { GET, POST } from "@/app/api/invoices/route";
+
+const CID = "11111111-1111-1111-1111-111111111111";
+const SID = "22222222-2222-2222-2222-222222222222";
+
+// Seed clients + suppliers so a manual create can resolve them.
+function seedClientAndSupplier() {
+  mockSupabase._table("clients")._setResult({
+    data: { id: CID, name: "Akram Transport B.V.", phone_number: "+31600000000", iban: "NL00", address: "Govert Flinckstraat 18" },
+    error: null,
+  });
+  mockSupabase._table("suppliers")._setResult({
+    data: { id: SID, client_id: CID, name: "Buki Koeriers B.V.", relatie_code: "4", iban: "NL91", btw_number: "NL8", kvk: "931" },
+    error: null,
+  });
+}
+const validBody = {
+  invoice_number: "M-100",
+  client_id: CID,
+  supplier_id: SID,
+  date: "2026-06-16",
+  delivery_date: "2026-06-16",
+  description: "Factuur M-100",
+  btw_rate: 21,
+  line_items: [
+    { description: "RT TWB 1205", quantity: 22.5, unit_price: 30 },
+    { description: "RT TWB 1316", quantity: 16.33, unit_price: 30 },
+  ],
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -111,55 +144,68 @@ describe("GET /api/invoices", () => {
   });
 });
 
-describe("POST /api/invoices (manual create)", () => {
-  it("inserts a hand-entered invoice and returns 201", async () => {
+describe("POST /api/invoices (manual create, inkoop)", () => {
+  it("creates an invoice with server-computed totals + denormalised names, returns {id, invoice_number, file_url}", async () => {
+    seedClientAndSupplier();
     const t = mockSupabase._table("invoices");
-    t._setResult({ data: { id: "uuid-1", invoice_number: "M-100" }, error: null });
+    t._setResult({ data: { id: "inv1", invoice_number: "M-100" }, error: null });
 
-    const res = await POST(postReq({
-      invoice_number: "M-100",
-      client_name: "NemaFood B.V.",
-      phone_number: "+31 6 12 34 56 78",
-      date: "2026-06-16",
-      total_amount: 196.52,
-      currency: "eur",
-      invoice_direction: "verkoop",
-    }));
-
+    const res = await POST(postReq(validBody));
     expect(res.status).toBe(201);
-    const insert = t._calls.find((c: { method: string; args: unknown[] }) => c.method === "insert");
-    expect(insert).toBeTruthy();
-    const row = (insert!.args[0] as Record<string, unknown>);
-    expect(row.invoice_number).toBe("M-100");
-    expect(row.currency).toBe("EUR");                 // upper-cased
-    expect(row.invoice_direction).toBe("verkoop");
-    expect(row.file_url).toBe("");                     // manual rows have no file
-    expect(row.status).toBe("extracted");             // default
-  });
-
-  it("defaults direction to inkoop and status to extracted", async () => {
-    const t = mockSupabase._table("invoices");
-    t._setResult({ data: { id: "uuid-2", invoice_number: "M-101" }, error: null });
-
-    await POST(postReq({ invoice_number: "M-101" }));
+    const body = await res.json();
+    expect(body).toMatchObject({ id: "inv1", invoice_number: "M-100", file_url: "s3://bucket/generated-invoices/x.pdf" });
 
     const insert = t._calls.find((c: { method: string; args: unknown[] }) => c.method === "insert")!;
     const row = insert.args[0] as Record<string, unknown>;
-    expect(row.invoice_direction).toBe("inkoop");
-    expect(row.currency).toBe("EUR");
-    expect(row.date).toBeNull();
+    // Server-side totals (22.5*30 + 16.33*30 = 1164.90; 21% → 244.62; total 1409.52)
+    expect(row.subtotal).toBe(1164.9);
+    expect(row.btw_amount).toBe(244.62);
+    expect(row.total_amount).toBe(1409.52);
+    expect(row.btw_rate).toBe(21);
+    expect(row.invoice_direction).toBe("inkoop");      // hardcoded
+    expect(row.client_id).toBe(CID);
+    expect(row.supplier_id).toBe(SID);
+    expect(row.client_name).toBe("Akram Transport B.V.");   // denormalised
+    expect(row.supplier_name).toBe("Buki Koeriers B.V.");
+    expect(Array.isArray(row.line_items)).toBe(true);
+    expect((row.line_items as unknown[]).length).toBe(2);
   });
 
-  it("rejects a missing invoice_number with 400", async () => {
-    const res = await POST(postReq({ client_name: "X" }));
+  it("recomputes totals server-side and ignores any client-sent totals", async () => {
+    seedClientAndSupplier();
+    mockSupabase._table("invoices")._setResult({ data: { id: "inv2", invoice_number: "M-2" }, error: null });
+    const res = await POST(postReq({
+      ...validBody, invoice_number: "M-2",
+      subtotal: 1, btw_amount: 1, total_amount: 1,        // attacker-supplied — must be ignored
+    }));
+    expect(res.status).toBe(201);
+    const row = mockSupabase._table("invoices")._calls.find((c: { method: string; args: unknown[] }) => c.method === "insert")!.args[0] as Record<string, unknown>;
+    expect(row.total_amount).toBe(1409.52);
+  });
+
+  it("rejects a missing client_id with 400", async () => {
+    const { client_id, ...noClient } = validBody;     // eslint-disable-line @typescript-eslint/no-unused-vars
+    const res = await POST(postReq(noClient));
     expect(res.status).toBe(400);
   });
 
-  it("maps a unique-violation (23505) to 409", async () => {
-    const t = mockSupabase._table("invoices");
-    t._setResult({ data: null, error: { code: "23505", message: "duplicate key" } });
+  it("rejects when the supplier does not belong to the client (400)", async () => {
+    mockSupabase._table("clients")._setResult({ data: { id: CID, name: "Akram" }, error: null });
+    mockSupabase._table("suppliers")._setResult({ data: { id: SID, client_id: "99999999-9999-9999-9999-999999999999", name: "X" }, error: null });
+    const res = await POST(postReq(validBody));
+    expect(res.status).toBe(400);
+  });
 
-    const res = await POST(postReq({ invoice_number: "M-100" }));
+  it("404s when the client is not found", async () => {
+    mockSupabase._table("clients")._setResult({ data: null, error: null });
+    const res = await POST(postReq(validBody));
+    expect(res.status).toBe(404);
+  });
+
+  it("maps a duplicate invoice_number (23505) to 409", async () => {
+    seedClientAndSupplier();
+    mockSupabase._table("invoices")._setResult({ data: null, error: { code: "23505", message: "duplicate key" } });
+    const res = await POST(postReq(validBody));
     expect(res.status).toBe(409);
   });
 });

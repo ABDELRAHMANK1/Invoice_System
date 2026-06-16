@@ -15,6 +15,7 @@ type Client = {
   country: string;
   btw_number: string | null;
   kvk_number: string | null;
+  iban: string | null;
   notes: string | null;
   created_at: string;
 };
@@ -47,7 +48,7 @@ type ClientFormData = Omit<Client, "id" | "created_at">;
 
 const emptyForm: ClientFormData = {
   name: "", phone_number: "", email: "", address: "",
-  city: "", country: "NL", btw_number: "", kvk_number: "", notes: "",
+  city: "", country: "NL", btw_number: "", kvk_number: "", iban: "", notes: "",
 };
 
 interface ClientDrawerProps {
@@ -69,7 +70,7 @@ function ClientDrawer({ client, open, onClose, onSaved }: ClientDrawerProps) {
       setForm(client
         ? { name: client.name, phone_number: client.phone_number ?? "", email: client.email ?? "",
             address: client.address ?? "", city: client.city ?? "", country: client.country,
-            btw_number: client.btw_number ?? "", kvk_number: client.kvk_number ?? "", notes: client.notes ?? "" }
+            btw_number: client.btw_number ?? "", kvk_number: client.kvk_number ?? "", iban: client.iban ?? "", notes: client.notes ?? "" }
         : emptyForm);
       setErrors({});
     }
@@ -102,6 +103,7 @@ function ClientDrawer({ client, open, onClose, onSaved }: ClientDrawerProps) {
         city:         form.city || null,
         btw_number:   form.btw_number || null,
         kvk_number:   form.kvk_number || null,
+        iban:         form.iban || null,
         notes:        form.notes || null,
       };
       const saved = client
@@ -179,6 +181,8 @@ function ClientDrawer({ client, open, onClose, onSaved }: ClientDrawerProps) {
             {field("btw_number", "BTW number", { placeholder: "NL000000000B01", hint: "Dutch VAT number" })}
             {field("kvk_number", "KvK number", { placeholder: "12345678", hint: "Chamber of Commerce" })}
           </div>
+
+          {field("iban", "IBAN", { placeholder: "NL00 BANK 0000 0000 00", hint: "Used on generated invoice PDFs" })}
 
           {field("address", "Address", { placeholder: "Keizersgracht 1" })}
 

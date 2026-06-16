@@ -30,7 +30,7 @@ function makeChain(vi, initial) {
 
   const chainable = [
     "select", "eq", "ilike", "gte", "lte", "in", "or", "not",
-    "order", "range", "limit", "single",
+    "order", "range", "limit", "single", "maybeSingle",
     "insert", "update", "delete", "upsert",
   ];
 

@@ -3,22 +3,36 @@ import { z } from "zod";
 import { jsonError, normalizePhone, pagination, requireInternalApiKey } from "@/lib/http";
 import { applyCommonFilters, filtersFromRequest } from "@/lib/query";
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import { computeTotals } from "@/lib/billing";
+import { buildInvoicePdf } from "@/lib/invoice-pdf";
+import { uploadBuffer } from "@/lib/storage";
 
 export const runtime = "nodejs";
 
-// Manual invoice creation from the dashboard's "New invoice" form. Unlike the
-// n8n batch upsert, there is no source file, so file_url is stored empty and
-// raw_extraction records that the row was hand-entered.
+// Manual invoice creation from the dashboard's "New invoice" form: a CLIENT
+// received this inkoop invoice FROM one of its SUPPLIERS. Totals are computed
+// server-side (never trusted from the client), a PDF is rendered + stored in
+// S3, and file_url is set to that PDF. The n8n OCR pipeline uses a different
+// endpoint (/api/invoices/batch) and is unaffected.
+const dateField = z.union([z.literal(""), z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD")]).optional().nullable();
+
+const lineItemSchema = z.object({
+  description: z.string().trim().max(300).optional().default(""),
+  quantity:    z.number().finite(),
+  unit_price:  z.number().finite(),
+});
+
 const createSchema = z.object({
-  invoice_number:    z.string().trim().min(1, "Invoice number is required"),
-  client_name:       z.string().trim().optional().nullable(),
-  phone_number:      z.string().trim().optional().nullable(),
-  date:              z.union([z.literal(""), z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD")])
-                       .optional().nullable(),
-  total_amount:      z.number().nonnegative().optional().nullable(),
-  currency:          z.string().trim().length(3).optional().nullable(),
-  invoice_direction: z.enum(["inkoop", "verkoop"]).optional().nullable(),
-  status:            z.enum(["extracted", "pending", "error"]).optional(),
+  invoice_number:  z.string().trim().min(1, "Invoice number is required"),
+  client_id:       z.string().uuid("A client must be selected"),
+  supplier_id:     z.string().uuid("A supplier must be selected"),
+  date:            dateField,
+  delivery_date:   dateField,
+  description:     z.string().trim().max(500).optional().nullable(),
+  order_reference: z.string().trim().max(200).optional().nullable(),
+  line_items:      z.array(lineItemSchema).min(1, "At least one line item is required"),
+  btw_rate:        z.number().min(0).max(100),
+  currency:        z.string().trim().length(3).optional().nullable(),
 });
 
 export async function POST(req: NextRequest) {
@@ -34,37 +48,86 @@ export async function POST(req: NextRequest) {
 
   const parsed = createSchema.safeParse(payload);
   if (!parsed.success) return jsonError("Invalid invoice payload", 400, parsed.error.flatten());
-
   const v = parsed.data;
-  const row = {
+
+  // Resolve client + supplier; the supplier must belong to the client.
+  const { data: client, error: cErr } = await supabaseAdmin
+    .from("clients").select("*").eq("id", v.client_id).maybeSingle();
+  if (cErr) return jsonError(cErr.message, 500);
+  if (!client) return jsonError("Client not found", 404);
+
+  const { data: supplier, error: sErr } = await supabaseAdmin
+    .from("suppliers").select("*").eq("id", v.supplier_id).maybeSingle();
+  if (sErr) return jsonError(sErr.message, 500);
+  if (!supplier) return jsonError("Supplier not found", 404);
+  if (supplier.client_id !== v.client_id) {
+    return jsonError("Supplier does not belong to the selected client", 400);
+  }
+
+  // Server-authoritative totals (truncated to 2dp, matching the PDF).
+  const totals = computeTotals(v.line_items, v.btw_rate);
+  const invoiceDate = v.date || null;
+  const deliveryDate = v.delivery_date || invoiceDate;
+
+  // Insert first (no file_url yet) so a duplicate invoice_number fails cheaply
+  // via the unique constraint, before we spend effort rendering a PDF.
+  const insertRow = {
     invoice_number:    v.invoice_number,
-    client_name:       v.client_name?.trim() || null,
-    phone_number:      (v.phone_number ? normalizePhone(v.phone_number) : "") || "",
-    date:              v.date || null,
-    total_amount:      v.total_amount ?? null,
+    client_id:         v.client_id,
+    supplier_id:       v.supplier_id,
+    client_name:       client.name,                 // denormalised for the list + n8n parity
+    supplier_name:     supplier.name,
+    phone_number:      (client.phone_number ? normalizePhone(client.phone_number) : "") || "",
+    date:              invoiceDate,
+    description:       v.description?.trim() || null,
+    line_items:        totals.items,
+    btw_rate:          totals.btw_rate,
+    subtotal:          totals.subtotal,
+    btw_amount:        totals.btw_amount,
+    total_amount:      totals.total,
     currency:          (v.currency || "EUR").toUpperCase(),
-    invoice_direction: v.invoice_direction ?? "inkoop",
-    status:            v.status ?? "extracted",
+    invoice_direction: "inkoop",
+    status:            "extracted",
     file_url:          "",
     confidence:        null,
-    raw_extraction:    { source: "manual" },
+    raw_extraction:    { source: "manual", order_reference: v.order_reference ?? null, delivery_date: deliveryDate },
   };
 
-  const { data, error } = await supabaseAdmin
-    .from("invoices")
-    .insert(row)
-    .select("id,invoice_number,client_name,date,total_amount,currency,status,invoice_direction")
-    .single();
-
+  const { data: created, error } = await supabaseAdmin
+    .from("invoices").insert(insertRow).select("id,invoice_number").single();
   if (error) {
-    // 23505 = unique_violation on invoices_invoice_number_unique
-    if (error.code === "23505") {
-      return jsonError(`Invoice number "${v.invoice_number}" already exists`, 409);
-    }
+    if (error.code === "23505") return jsonError(`Invoice number "${v.invoice_number}" already exists`, 409);
     return jsonError(error.message, 500);
   }
 
-  return NextResponse.json({ data }, { status: 201 });
+  // Render the PDF and store it in S3; set file_url to the stored object.
+  try {
+    const pdf = await buildInvoicePdf({
+      supplier,
+      client,
+      meta: {
+        invoice_number:  v.invoice_number,
+        invoice_date:    invoiceDate,
+        delivery_date:   deliveryDate,
+        order_reference: v.order_reference ?? null,
+        description:     v.description ?? null,
+      },
+      totals,
+    });
+    const now = new Date();
+    const key = `generated-invoices/${now.getUTCFullYear()}/${String(now.getUTCMonth() + 1).padStart(2, "0")}/${created.id}.pdf`;
+    const fileUrl = await uploadBuffer({ key, body: pdf, contentType: "application/pdf" });
+    await supabaseAdmin.from("invoices").update({ file_url: fileUrl }).eq("id", created.id);
+    return NextResponse.json({ id: created.id, invoice_number: created.invoice_number, file_url: fileUrl }, { status: 201 });
+  } catch (e) {
+    // The invoice row exists; only the PDF failed. Surface it without 500-ing
+    // the whole create so the user isn't left unsure whether it saved.
+    console.error("[invoices.POST] PDF generation/upload failed:", e);
+    return NextResponse.json(
+      { id: created.id, invoice_number: created.invoice_number, file_url: "", warning: "Invoice created, but PDF generation failed." },
+      { status: 201 },
+    );
+  }
 }
 
 export async function GET(req: NextRequest) {
@@ -116,7 +179,7 @@ export async function GET(req: NextRequest) {
 
   let mainQuery = supabaseAdmin
     .from("invoices")
-    .select("id,file_id,phone_number,invoice_number,client_name,date,total_amount,currency,file_url,status,confidence,created_at,invoice_direction", {
+    .select("id,file_id,phone_number,invoice_number,client_id,client_name,date,total_amount,currency,file_url,status,confidence,created_at,invoice_direction", {
       count: "exact"
     });
   mainQuery = applyFilters(mainQuery);
@@ -151,10 +214,28 @@ export async function GET(req: NextRequest) {
     }, {});
   }
 
-  const enriched = rows.map((r: { phone_number: string | null; client_name: string | null; [k: string]: unknown }) => ({
-    ...r,
-    sender_name: r.phone_number ? senderByPhone[r.phone_number] ?? null : null,
-  }));
+  // Resolve the structured client name via client_id (manual invoices). Falls
+  // back to the free-text client_name column for n8n OCR rows (client_id null).
+  const clientIds = Array.from(
+    new Set(rows.map((r: { client_id?: string | null }) => r.client_id).filter(Boolean))
+  ) as string[];
+  let nameByClientId: Record<string, string> = {};
+  if (clientIds.length > 0) {
+    const { data: byId } = await supabaseAdmin.from("clients").select("id, name").in("id", clientIds);
+    nameByClientId = (byId || []).reduce<Record<string, string>>((acc, c) => {
+      acc[c.id] = c.name;
+      return acc;
+    }, {});
+  }
+
+  const enriched = rows.map((r: { phone_number: string | null; client_id?: string | null; client_name: string | null; [k: string]: unknown }) => {
+    const resolvedClientName = (r.client_id && nameByClientId[r.client_id]) || r.client_name;
+    return {
+      ...r,
+      client_name: resolvedClientName,
+      sender_name: r.phone_number ? senderByPhone[r.phone_number] ?? null : null,
+    };
+  });
 
   return NextResponse.json({
     data: enriched,

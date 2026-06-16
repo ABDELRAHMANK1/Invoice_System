@@ -25,6 +25,7 @@
     "jszip": "^3.10.1",
     "next": "^15.2.1",
     "openai": "^4.86.1",
+    "pdfkit": "^0.15.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "zod": "^3.24.2"
@@ -35,6 +36,7 @@
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
     "@types/node": "^22.13.10",
+    "@types/pdfkit": "^0.17.6",
     "@types/react": "^19.0.10",
     "@types/react-dom": "^19.0.4",
     "@vitejs/plugin-react": "^6.0.2",
