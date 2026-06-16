@@ -77,7 +77,8 @@ button, input, select, textarea { font: inherit; }
 button { cursor: pointer; border: none; background: none; padding: 0; }
 a { color: inherit; text-decoration: none; }
 ::selection { background: var(--accent); color: #fff; }
-input[type=date]::-webkit-calendar-picker-indicator { opacity: .45; cursor: pointer; }
+input[type=date] { cursor: pointer; min-width: 104px; }
+input[type=date]::-webkit-calendar-picker-indicator { opacity: .6; cursor: pointer; }
 .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
 /* ── Shell ── */

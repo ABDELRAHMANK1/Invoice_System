@@ -9,6 +9,7 @@ import { BulkBar } from "@/app/components/BulkBar";
 import { InvoiceDrawer } from "@/app/components/InvoiceDrawer";
 import { ExportModal } from "@/app/components/ExportModal";
 import { UploadModal } from "@/app/components/UploadModal";
+import { NewInvoiceModal } from "@/app/components/NewInvoiceModal";
 import { useToast } from "@/app/components/Toast";
 
 type Paged<T> = {
@@ -86,6 +87,7 @@ export default function InvoicesPage() {
   const [exportOpen, setExportOpen]   = useState(false);
   const [exportIds, setExportIds]     = useState<string[] | undefined>(undefined);
   const [uploadOpen, setUploadOpen]   = useState(false);
+  const [newOpen, setNewOpen]         = useState(false);
   const [error, setError]             = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -204,7 +206,7 @@ export default function InvoicesPage() {
           </button>
           <button
             className="btn primary"
-            onClick={() => toast("New invoice form — coming soon", "info")}
+            onClick={() => setNewOpen(true)}
           >
             <Icon d={I.invoice} size={13} /> New invoice
           </button>
@@ -315,6 +317,15 @@ export default function InvoicesPage() {
         onClose={() => setUploadOpen(false)}
         onSuccess={() => {
           toast("File uploaded — extraction queued", "success");
+          load();
+        }}
+      />
+
+      <NewInvoiceModal
+        open={newOpen}
+        onClose={() => setNewOpen(false)}
+        onSuccess={() => {
+          toast("Invoice created", "success");
           load();
         }}
       />

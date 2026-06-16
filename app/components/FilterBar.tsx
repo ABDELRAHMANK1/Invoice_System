@@ -21,8 +21,19 @@ const QUICK_CHIPS = [
   { k: "high",     label: "Above €500" },
 ];
 
+// Local-date ISO (YYYY-MM-DD). Avoid toISOString(), which converts to UTC and
+// can roll "today" to the wrong day for users east/west of UTC.
 function toISODate(d: Date): string {
-  return d.toISOString().slice(0, 10);
+  const tz = d.getTimezoneOffset() * 60000;
+  return new Date(d.getTime() - tz).toISOString().slice(0, 10);
+}
+
+// A native date input only opens its calendar when the small glyph is clicked,
+// which is easy to miss in a narrow field. Trigger the picker on click/focus so
+// clicking anywhere in the field works.
+function openPicker(e: React.MouseEvent<HTMLInputElement> | React.FocusEvent<HTMLInputElement>) {
+  const el = e.currentTarget as HTMLInputElement & { showPicker?: () => void };
+  try { el.showPicker?.(); } catch { /* not user-activated — ignore */ }
 }
 
 // Compute from/to dates for a given quick chip. Returns null when the chip
@@ -113,6 +124,9 @@ export function FilterBar({
             type="date"
             value={q.from}
             onChange={(e) => setQ({ ...q, from: e.target.value })}
+            onClick={openPicker}
+            onFocus={openPicker}
+            onKeyDown={onEnter}
             aria-label="From date"
           />
         </div>
@@ -125,6 +139,9 @@ export function FilterBar({
             type="date"
             value={q.to}
             onChange={(e) => setQ({ ...q, to: e.target.value })}
+            onClick={openPicker}
+            onFocus={openPicker}
+            onKeyDown={onEnter}
             aria-label="To date"
           />
         </div>

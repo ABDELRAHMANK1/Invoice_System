@@ -10,7 +10,7 @@ const { mockSupabase } = vi.hoisted(() => {
 
 vi.mock("@/lib/supabase-admin", () => ({ supabaseAdmin: mockSupabase }));
 
-import { GET } from "@/app/api/invoices/route";
+import { GET, POST } from "@/app/api/invoices/route";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -19,6 +19,14 @@ beforeEach(() => {
 
 function req(url: string, headers: Record<string, string> = {}) {
   return new NextRequest(url, { headers: { "sec-fetch-site": "same-origin", ...headers } });
+}
+
+function postReq(body: unknown, headers: Record<string, string> = {}) {
+  return new NextRequest("http://localhost/api/invoices", {
+    method: "POST",
+    headers: { "sec-fetch-site": "same-origin", "content-type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
 }
 
 describe("GET /api/invoices", () => {
@@ -100,5 +108,58 @@ describe("GET /api/invoices", () => {
     // No sec-fetch-site, no x-api-key
     const res = await GET(r);
     expect(res.status).toBe(401);
+  });
+});
+
+describe("POST /api/invoices (manual create)", () => {
+  it("inserts a hand-entered invoice and returns 201", async () => {
+    const t = mockSupabase._table("invoices");
+    t._setResult({ data: { id: "uuid-1", invoice_number: "M-100" }, error: null });
+
+    const res = await POST(postReq({
+      invoice_number: "M-100",
+      client_name: "NemaFood B.V.",
+      phone_number: "+31 6 12 34 56 78",
+      date: "2026-06-16",
+      total_amount: 196.52,
+      currency: "eur",
+      invoice_direction: "verkoop",
+    }));
+
+    expect(res.status).toBe(201);
+    const insert = t._calls.find((c: { method: string; args: unknown[] }) => c.method === "insert");
+    expect(insert).toBeTruthy();
+    const row = (insert!.args[0] as Record<string, unknown>);
+    expect(row.invoice_number).toBe("M-100");
+    expect(row.currency).toBe("EUR");                 // upper-cased
+    expect(row.invoice_direction).toBe("verkoop");
+    expect(row.file_url).toBe("");                     // manual rows have no file
+    expect(row.status).toBe("extracted");             // default
+  });
+
+  it("defaults direction to inkoop and status to extracted", async () => {
+    const t = mockSupabase._table("invoices");
+    t._setResult({ data: { id: "uuid-2", invoice_number: "M-101" }, error: null });
+
+    await POST(postReq({ invoice_number: "M-101" }));
+
+    const insert = t._calls.find((c: { method: string; args: unknown[] }) => c.method === "insert")!;
+    const row = insert.args[0] as Record<string, unknown>;
+    expect(row.invoice_direction).toBe("inkoop");
+    expect(row.currency).toBe("EUR");
+    expect(row.date).toBeNull();
+  });
+
+  it("rejects a missing invoice_number with 400", async () => {
+    const res = await POST(postReq({ client_name: "X" }));
+    expect(res.status).toBe(400);
+  });
+
+  it("maps a unique-violation (23505) to 409", async () => {
+    const t = mockSupabase._table("invoices");
+    t._setResult({ data: null, error: { code: "23505", message: "duplicate key" } });
+
+    const res = await POST(postReq({ invoice_number: "M-100" }));
+    expect(res.status).toBe(409);
   });
 });

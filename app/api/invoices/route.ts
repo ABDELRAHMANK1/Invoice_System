@@ -1,9 +1,71 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { jsonError, normalizePhone, pagination, requireInternalApiKey } from "@/lib/http";
 import { applyCommonFilters, filtersFromRequest } from "@/lib/query";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
 export const runtime = "nodejs";
+
+// Manual invoice creation from the dashboard's "New invoice" form. Unlike the
+// n8n batch upsert, there is no source file, so file_url is stored empty and
+// raw_extraction records that the row was hand-entered.
+const createSchema = z.object({
+  invoice_number:    z.string().trim().min(1, "Invoice number is required"),
+  client_name:       z.string().trim().optional().nullable(),
+  phone_number:      z.string().trim().optional().nullable(),
+  date:              z.union([z.literal(""), z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD")])
+                       .optional().nullable(),
+  total_amount:      z.number().nonnegative().optional().nullable(),
+  currency:          z.string().trim().length(3).optional().nullable(),
+  invoice_direction: z.enum(["inkoop", "verkoop"]).optional().nullable(),
+  status:            z.enum(["extracted", "pending", "error"]).optional(),
+});
+
+export async function POST(req: NextRequest) {
+  const authError = requireInternalApiKey(req);
+  if (authError) return authError;
+
+  let payload: unknown;
+  try {
+    payload = await req.json();
+  } catch {
+    return jsonError("Invalid JSON body", 400);
+  }
+
+  const parsed = createSchema.safeParse(payload);
+  if (!parsed.success) return jsonError("Invalid invoice payload", 400, parsed.error.flatten());
+
+  const v = parsed.data;
+  const row = {
+    invoice_number:    v.invoice_number,
+    client_name:       v.client_name?.trim() || null,
+    phone_number:      (v.phone_number ? normalizePhone(v.phone_number) : "") || "",
+    date:              v.date || null,
+    total_amount:      v.total_amount ?? null,
+    currency:          (v.currency || "EUR").toUpperCase(),
+    invoice_direction: v.invoice_direction ?? "inkoop",
+    status:            v.status ?? "extracted",
+    file_url:          "",
+    confidence:        null,
+    raw_extraction:    { source: "manual" },
+  };
+
+  const { data, error } = await supabaseAdmin
+    .from("invoices")
+    .insert(row)
+    .select("id,invoice_number,client_name,date,total_amount,currency,status,invoice_direction")
+    .single();
+
+  if (error) {
+    // 23505 = unique_violation on invoices_invoice_number_unique
+    if (error.code === "23505") {
+      return jsonError(`Invoice number "${v.invoice_number}" already exists`, 409);
+    }
+    return jsonError(error.message, 500);
+  }
+
+  return NextResponse.json({ data }, { status: 201 });
+}
 
 export async function GET(req: NextRequest) {
   const authError = requireInternalApiKey(req);
@@ -12,7 +74,6 @@ export async function GET(req: NextRequest) {
   const { page, limit, from, to } = pagination(req, 20, 10000);
   const filters = filtersFromRequest(req);
   const dateColumn = req.nextUrl.searchParams.get("date_column") === "created_at" ? "created_at" : "date";
-  const ascending = filters.order === "created_at_asc";
 
   const sortByParam = req.nextUrl.searchParams.get("sort_by") || "date";
   const sortDirParam = req.nextUrl.searchParams.get("sort_dir") || "desc";
