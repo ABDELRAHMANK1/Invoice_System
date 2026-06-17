@@ -187,7 +187,14 @@ def extract_date(text: str) -> Optional[str]:
 
 # ── Total amount ──────────────────────────────────────────────────────────────
 
+# A generic "Total"/"Totaal"/"Gesamt" is allowed, but only when NOT immediately
+# followed by a word that marks a subtotal / VAT line rather than the grand
+# total — e.g. "Total EX VAT", "Totaal excl. BTW", "Totaal btw", "Gesamt netto",
+# "Gesamt exkl.". This lets the bare labels work without eating those lines.
+_NOT_SUBTOTAL = r"(?!\s*(?:ex|excl|btw|vat|mwst|net|netto|ohne)\b)"
+
 TOTAL_LABELS = (
+    # ── Most specific first (incl./grand variants) ──
     r"Amount\s+In\.?\s*VAT",
     r"Amount\s+Incl(?:\.|usive)?\s*VAT",
     r"Total\s+EUR\s+Incl(?:\.|usive)?\s*VAT",
@@ -195,14 +202,25 @@ TOTAL_LABELS = (
     r"Totaal\s+incl\.?\s*BTW",        # also matches "TOTAAL Incl.BTW: 765,13 EUR"
     r"Totaal\s+te\s+betalen",         # MOCCA: "totaal te betalen EU 196,52"
     r"Totaal\s+in\s+euro",            # SAFE: "Totaal in euro: € 176,09"
+    r"Grand\s+Total",
+    r"Total\s+Amount\b",
+    r"Amount\s+Due",
+    r"Balance\s+Due",
+    # ── Dutch ──
+    r"Totaalbedrag",
+    r"Eindtotaal",
     r"FACTUURBEDRAG",
     r"Factuurbedrag",
     r"PRIJS\s+INCL",
-    r"Grand\s+Total",
-    r"Total\s+Amount\b",
-    r"Totaalbedrag",
-    # Deliberately omit a generic "Total"/"Totaal" so phrases like "Total EX VAT"
-    # / "Totaal excl. BTW" don't false-match the grand total.
+    # ── German ──
+    r"Gesamtbetrag",
+    r"Rechnungsbetrag",
+    r"Endbetrag",
+    r"Zu\s+zahlen",
+    # ── Generic bare labels (last, guarded against subtotal/VAT-line phrases) ──
+    rf"\bTotal\b{_NOT_SUBTOTAL}",
+    rf"\bTotaal\b{_NOT_SUBTOTAL}",
+    rf"\bGesamt\b{_NOT_SUBTOTAL}",
 )
 
 
