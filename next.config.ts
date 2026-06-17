@@ -2,8 +2,12 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  // pdfkit reads its built-in font metrics (*.afm) from disk at runtime; ensure
-  // the serverless trace for the invoice route bundles that data folder.
+  // Keep pdfkit unbundled: it reads its built-in font metrics (*.afm) from disk
+  // relative to its own location in node_modules. If Next bundles it into a
+  // vendor chunk, those .afm files aren't copied and rendering fails with
+  // "ENOENT … data/Helvetica.afm". Marking it external loads it from node_modules.
+  serverExternalPackages: ["pdfkit"],
+  // And include the font data in the serverless deployment trace.
   outputFileTracingIncludes: {
     "/api/invoices": ["./node_modules/pdfkit/js/data/**/*"]
   },

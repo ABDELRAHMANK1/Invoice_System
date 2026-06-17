@@ -291,6 +291,34 @@ this is intentional, do not change it.
   - `app/api/clients/[id]/suppliers/...` — supplier CRUD + `/bulk` xlsx import.
   - `app/(dashboard)/clients/[id]/page.tsx` — client detail + supplier table.
 
+### Manual invoice creation + PDF generation
+
+- **Flow:** the dashboard "New invoice" button (`app/components/NewInvoiceModal.tsx`,
+  English UI) creates an **inkoop** invoice — a *client* received it *from* one of
+  its *suppliers* (the existing `suppliers` table, filtered by `client_id`).
+- **`POST /api/invoices`** (distinct from the n8n `POST /api/invoices/batch`):
+  accepts `client_id`, `supplier_id`, `description`, `line_items`, `btw_rate`;
+  **recomputes totals server-side** (`lib/billing.ts`, truncated to 2dp — never
+  trust client totals), denormalises `client_name`/`supplier_name`, renders a PDF
+  and uploads it to S3, returns JSON `{id, invoice_number, file_url}`.
+- **`lib/invoice-pdf.ts`** (pdfkit) matches the Akram Transport template: supplier =
+  issuer (top-right + Naar IBAN / Op naam van), client = bill-to (top-left),
+  Klantnummer = `supplier.relatie_code`, repeated header, running `Subtotaal` on
+  continued pages, footer BTW table + totals. Empty/nullable fields are omitted.
+- **pdfkit MUST stay unbundled.** `next.config.ts` sets
+  `serverExternalPackages: ["pdfkit"]` (+ `outputFileTracingIncludes` for the deploy
+  trace). Without it, Next bundles pdfkit and its `*.afm` font metrics go missing →
+  `ENOENT … data/Helvetica.afm` at render time. Don't remove this.
+- **Download:** `GET /api/invoices/[id]/download` 307-redirects to a signed S3 URL
+  with `Content-Disposition: attachment; filename="Invoice <number>.<ext>"`
+  (`?inline=1` to preview in-tab). The modal triggers it via a programmatic
+  `<a download>` click — `window.open()` after an `await` is popup-blocked.
+- **DB:** migrations `003` (clients.iban) + `004` (invoices.client_id/supplier_id/
+  description/line_items/btw_rate/subtotal/btw_amount, all nullable). The n8n
+  pipeline writes free-text `client_name`/`supplier_name` with null FKs and is
+  unaffected; the invoice list prefers `clients.name` via `client_id` and falls
+  back to the free-text column.
+
 ## Conventions worth knowing before editing
 
 - **Number formatting in exports**: `#,##0.00`. Truncation, not banker's
