@@ -186,7 +186,7 @@ export function InvoiceDrawer({ row, onClose }: InvoiceDrawerProps) {
                 <Icon d={I.download} size={13} /> Download
               </a>
               <a
-                href={`/api/invoices/${row.id}/download`}
+                href={`/api/invoices/${row.id}/download?inline=1`}
                 target="_blank"
                 rel="noopener"
                 className="btn primary"

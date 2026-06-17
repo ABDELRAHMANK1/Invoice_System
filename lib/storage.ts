@@ -60,9 +60,30 @@ export async function uploadBuffer(params: {
   return s3PublicStyleUrl(params.key);
 }
 
-export async function signedReadUrl(fileUrl: string, expiresIn = 60 * 60) {
+export async function signedReadUrl(
+  fileUrl: string,
+  expiresIn = 60 * 60,
+  opts?: { downloadName?: string; inline?: boolean }
+) {
   const key = keyFromS3Url(fileUrl);
-  return getSignedUrl(s3, new GetObjectCommand({ Bucket: env.s3Bucket || env.required("AWS_S3_BUCKET"), Key: key }), { expiresIn });
+  // Override the response headers on the signed URL so the browser uses a
+  // friendly filename and the right inline/attachment behaviour.
+  let disposition: string | undefined;
+  if (opts?.downloadName) {
+    const safe = opts.downloadName.replace(/[\r\n"\\]/g, "").replace(/[^\w.\- ]/g, "_").slice(0, 120);
+    disposition = `${opts.inline ? "inline" : "attachment"}; filename="${safe}"`;
+  } else if (opts?.inline) {
+    disposition = "inline";
+  }
+  return getSignedUrl(
+    s3,
+    new GetObjectCommand({
+      Bucket: env.s3Bucket || env.required("AWS_S3_BUCKET"),
+      Key: key,
+      ...(disposition ? { ResponseContentDisposition: disposition } : {}),
+    }),
+    { expiresIn }
+  );
 }
 
 export function buildInvoiceObjectKey(params: {

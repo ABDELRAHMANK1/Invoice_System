@@ -140,8 +140,20 @@ export function NewInvoiceModal({ open, onClose, onSuccess }: NewInvoiceModalPro
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error || `Create failed: ${res.status}`);
 
-      // Open the generated PDF (the download route redirects to a signed URL).
-      if (body.id && body.file_url) window.open(`/api/invoices/${body.id}/download`, "_blank");
+      // Download the generated PDF. A programmatic <a> click is reliable here —
+      // unlike window.open(), it isn't blocked as a popup after the await.
+      if (body.id && body.file_url) {
+        const a = document.createElement("a");
+        a.href = `/api/invoices/${body.id}/download`;
+        a.download = "";
+        a.rel = "noopener";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      } else if (body.warning) {
+        // Invoice saved, but the PDF didn't render — tell the user instead of failing silently.
+        alert(body.warning);
+      }
       onSuccess?.();
       onClose();
     } catch (e) {
