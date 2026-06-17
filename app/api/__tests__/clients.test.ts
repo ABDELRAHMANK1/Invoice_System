@@ -46,10 +46,14 @@ describe("clients API", () => {
     expect((insert.args[0] as Record<string, unknown>).iban).toBe("NL00 BANK 0000");
   });
 
-  it("GET :id nests the client's suppliers", async () => {
+  it("GET :id nests both the client's suppliers and customers", async () => {
     mockSupabase._table("clients")._setResult({ data: { id: "c1", name: "Akram", iban: "NL00" }, error: null });
     mockSupabase._table("suppliers")._setResult({
       data: [{ id: "s1", client_id: "c1", name: "Buki", active: true }],
+      error: null,
+    });
+    mockSupabase._table("customers")._setResult({
+      data: [{ id: "cu1", client_id: "c1", name: "Klant A", active: true }],
       error: null,
     });
     const res = await getOne(getReq("http://localhost/api/clients/c1"), params("c1"));
@@ -58,6 +62,8 @@ describe("clients API", () => {
     expect(body.id).toBe("c1");
     expect(Array.isArray(body.suppliers)).toBe(true);
     expect(body.suppliers[0].name).toBe("Buki");
+    expect(Array.isArray(body.customers)).toBe(true);
+    expect(body.customers[0].name).toBe("Klant A");
   });
 
   it("PATCH updates iban", async () => {

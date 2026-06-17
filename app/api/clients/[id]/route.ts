@@ -32,16 +32,25 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
   if (error) return jsonError(error.code === "PGRST116" ? "Client not found" : error.message, error.code === "PGRST116" ? 404 : 500);
 
-  // Nest the client's own suppliers so the New-invoice modal can populate its
-  // supplier dropdown from a single fetch. Active first, then by name.
-  const { data: suppliers } = await supabaseAdmin
-    .from("suppliers")
-    .select("*")
-    .eq("client_id", id)
-    .order("active", { ascending: false })
-    .order("name", { ascending: true });
+  // Nest the client's own suppliers (Leveranciers) and customers (Klanten) so
+  // the New-invoice modal and the client-detail tabs can populate from a single
+  // fetch. Active first, then by name.
+  const [{ data: suppliers }, { data: customers }] = await Promise.all([
+    supabaseAdmin
+      .from("suppliers")
+      .select("*")
+      .eq("client_id", id)
+      .order("active", { ascending: false })
+      .order("name", { ascending: true }),
+    supabaseAdmin
+      .from("customers")
+      .select("*")
+      .eq("client_id", id)
+      .order("active", { ascending: false })
+      .order("name", { ascending: true }),
+  ]);
 
-  return NextResponse.json({ ...data, suppliers: suppliers ?? [] });
+  return NextResponse.json({ ...data, suppliers: suppliers ?? [], customers: customers ?? [] });
 }
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {

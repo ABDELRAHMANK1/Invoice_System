@@ -43,3 +43,8 @@ export interface Supplier {
   created_at: string;
   updated_at: string;
 }
+
+// A client's customers (Klanten) — the parties it SELLS to. The `customers`
+// table mirrors `suppliers` column-for-column (see migration 005), so the
+// shape is identical; kept as a distinct type for call-site clarity.
+export type Customer = Supplier;

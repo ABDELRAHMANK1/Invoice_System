@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Icon, I } from "@/app/components/Icon";
 import { useToast } from "@/app/components/Toast";
 import type { Supplier } from "@/lib/types";
@@ -29,9 +29,57 @@ const emptyClientForm: ClientForm = {
   btw_number: "", kvk_number: "", relatie_code: "", notes: "",
 };
 
-type SupplierForm = Omit<Supplier, "id" | "client_id" | "created_at" | "updated_at">;
+// Suppliers (Leveranciers) and Customers (Klanten) share an identical record
+// shape (the `customers` table mirrors `suppliers` — see migration 005), so a
+// single "kind" parametrises the modal, import, and table for both.
+type Kind = "supplier" | "customer";
 
-const emptySupplierForm: SupplierForm = {
+// A counterparty record — same shape for both kinds.
+type Counterparty = Supplier;
+
+interface KindConfig {
+  /** URL ?tab value */
+  tab: "leveranciers" | "klanten";
+  /** Dutch tab label */
+  tabLabel: string;
+  singular: string;          // "supplier"
+  Singular: string;          // "Supplier"
+  apiBase: (clientId: string) => string;
+  addLabel: string;
+  importTitle: string;
+  emptyText: string;
+}
+
+const KINDS: Record<Kind, KindConfig> = {
+  supplier: {
+    tab: "leveranciers",
+    tabLabel: "Leveranciers",
+    singular: "supplier",
+    Singular: "Supplier",
+    apiBase: (clientId) => `/api/clients/${clientId}/suppliers`,
+    addLabel: "Add supplier",
+    importTitle: "Import suppliers from Excel",
+    emptyText: "No suppliers yet. Add one to map their relatie_code to invoices.",
+  },
+  customer: {
+    tab: "klanten",
+    tabLabel: "Klanten",
+    singular: "customer",
+    Singular: "Customer",
+    apiBase: (clientId) => `/api/clients/${clientId}/customers`,
+    addLabel: "Add customer",
+    importTitle: "Import customers from Excel",
+    emptyText: "No customers yet. Add the parties this client sells to.",
+  },
+};
+
+function kindFromTab(tab: string | null): Kind {
+  return tab === "klanten" ? "customer" : "supplier";
+}
+
+type CounterpartyForm = Omit<Counterparty, "id" | "client_id" | "created_at" | "updated_at">;
+
+const emptyCounterpartyForm: CounterpartyForm = {
   name: "", relatie_code: "", address: "", postcode: "", city: "",
   kvk: "", btw_number: "", iban: "", email: "", phone: "",
   payment_days: 0, active: true,
@@ -56,43 +104,45 @@ async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
-/* ── Supplier modal ──────────────────────────────────────────────── */
+/* ── Counterparty (supplier / customer) modal ────────────────────── */
 
-interface SupplierModalProps {
+interface CounterpartyModalProps {
   clientId: string;
-  supplier: Supplier | null;
+  kind: Kind;
+  record: Counterparty | null;
   open: boolean;
   onClose: () => void;
-  onSaved: (s: Supplier, isNew: boolean) => void;
+  onSaved: (s: Counterparty, isNew: boolean) => void;
 }
 
-function SupplierModal({ clientId, supplier, open, onClose, onSaved }: SupplierModalProps) {
+function CounterpartyModal({ clientId, kind, record, open, onClose, onSaved }: CounterpartyModalProps) {
+  const cfg = KINDS[kind];
   const { toast } = useToast();
-  const [form, setForm] = useState<SupplierForm>(emptySupplierForm);
+  const [form, setForm] = useState<CounterpartyForm>(emptyCounterpartyForm);
   const [loading, setLoading] = useState(false);
-  const [errors, setErrors] = useState<Partial<Record<keyof SupplierForm, string>>>({});
+  const [errors, setErrors] = useState<Partial<Record<keyof CounterpartyForm, string>>>({});
 
   useEffect(() => {
     if (open) {
-      setForm(supplier
+      setForm(record
         ? {
-            name: supplier.name,
-            relatie_code: supplier.relatie_code ?? "",
-            address: supplier.address ?? "",
-            postcode: supplier.postcode ?? "",
-            city: supplier.city ?? "",
-            kvk: supplier.kvk ?? "",
-            btw_number: supplier.btw_number ?? "",
-            iban: supplier.iban ?? "",
-            email: supplier.email ?? "",
-            phone: supplier.phone ?? "",
-            payment_days: supplier.payment_days ?? 0,
-            active: supplier.active,
+            name: record.name,
+            relatie_code: record.relatie_code ?? "",
+            address: record.address ?? "",
+            postcode: record.postcode ?? "",
+            city: record.city ?? "",
+            kvk: record.kvk ?? "",
+            btw_number: record.btw_number ?? "",
+            iban: record.iban ?? "",
+            email: record.email ?? "",
+            phone: record.phone ?? "",
+            payment_days: record.payment_days ?? 0,
+            active: record.active,
           }
-        : emptySupplierForm);
+        : emptyCounterpartyForm);
       setErrors({});
     }
-  }, [open, supplier]);
+  }, [open, record]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) { if (e.key === "Escape" && open) onClose(); }
@@ -126,19 +176,19 @@ function SupplierModal({ clientId, supplier, open, onClose, onSaved }: SupplierM
         payment_days: Number(form.payment_days ?? 0),
         active:       form.active,
       };
-      const saved = supplier
-        ? await apiJson<Supplier>(`/api/clients/${clientId}/suppliers/${supplier.id}`, {
+      const saved = record
+        ? await apiJson<Counterparty>(`${cfg.apiBase(clientId)}/${record.id}`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
           })
-        : await apiJson<Supplier>(`/api/clients/${clientId}/suppliers`, {
+        : await apiJson<Counterparty>(cfg.apiBase(clientId), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
           });
-      toast(supplier ? "Supplier updated" : "Supplier added", "success");
-      onSaved(saved, !supplier);
+      toast(record ? `${cfg.Singular} updated` : `${cfg.Singular} added`, "success");
+      onSaved(saved, !record);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Save failed", "error");
     } finally {
@@ -146,7 +196,7 @@ function SupplierModal({ clientId, supplier, open, onClose, onSaved }: SupplierM
     }
   }
 
-  function input(key: keyof SupplierForm, label: string, opts?: { placeholder?: string; type?: string; required?: boolean }) {
+  function input(key: keyof CounterpartyForm, label: string, opts?: { placeholder?: string; type?: string; required?: boolean }) {
     const value = form[key];
     return (
       <div className="form-group">
@@ -172,6 +222,8 @@ function SupplierModal({ clientId, supplier, open, onClose, onSaved }: SupplierM
 
   if (!open) return null;
 
+  const editing = !!record;
+
   return (
     <>
       <div className="drawer-bg on" onClick={onClose} aria-hidden="true" />
@@ -179,12 +231,12 @@ function SupplierModal({ clientId, supplier, open, onClose, onSaved }: SupplierM
         className="drawer on"
         role="dialog"
         aria-modal="true"
-        aria-label={supplier ? "Edit supplier" : "Add supplier"}
+        aria-label={editing ? `Edit ${cfg.singular}` : `Add ${cfg.singular}`}
       >
         <div className="dr-head">
           <div style={{ flex: 1, minWidth: 0 }}>
-            <h3>{supplier ? "Edit supplier" : "Add supplier"}</h3>
-            {supplier && <div className="dr-sub">{supplier.name}</div>}
+            <h3>{editing ? `Edit ${cfg.singular}` : `Add ${cfg.singular}`}</h3>
+            {editing && <div className="dr-sub">{record!.name}</div>}
           </div>
           <button className="iconbtn" onClick={onClose} aria-label="Close"><Icon d={I.x} size={14} /></button>
         </div>
@@ -227,7 +279,7 @@ function SupplierModal({ clientId, supplier, open, onClose, onSaved }: SupplierM
         <div className="dr-foot">
           <button className="btn" onClick={onClose} disabled={loading}>Cancel</button>
           <button className="btn primary" onClick={handleSave} disabled={loading}>
-            {loading ? <><span className="spinner-sm" /> Saving…</> : <><Icon d={I.check} size={13} />{supplier ? "Save changes" : "Add supplier"}</>}
+            {loading ? <><span className="spinner-sm" /> Saving…</> : <><Icon d={I.check} size={13} />{editing ? "Save changes" : cfg.addLabel}</>}
           </button>
         </div>
       </aside>
@@ -235,7 +287,7 @@ function SupplierModal({ clientId, supplier, open, onClose, onSaved }: SupplierM
   );
 }
 
-/* ── Import suppliers from Excel modal ──────────────────────────── */
+/* ── Import counterparties from Excel modal ─────────────────────── */
 
 interface ImportResult {
   inserted: number;
@@ -248,12 +300,14 @@ interface ImportResult {
 
 interface ImportModalProps {
   clientId: string;
+  kind: Kind;
   open: boolean;
   onClose: () => void;
   onImported: () => void;
 }
 
-function ImportSuppliersModal({ clientId, open, onClose, onImported }: ImportModalProps) {
+function ImportCounterpartiesModal({ clientId, kind, open, onClose, onImported }: ImportModalProps) {
+  const cfg = KINDS[kind];
   const { toast } = useToast();
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
@@ -286,15 +340,15 @@ function ImportSuppliersModal({ clientId, open, onClose, onImported }: ImportMod
     try {
       const form = new FormData();
       form.append("file", file);
-      const res = await fetch(`/api/clients/${clientId}/suppliers/bulk`, { method: "POST", body: form });
+      const res = await fetch(`${cfg.apiBase(clientId)}/bulk`, { method: "POST", body: form });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `${res.status}`);
       setResult(data);
       if (data.inserted > 0) {
-        toast(`Imported ${data.inserted} supplier${data.inserted === 1 ? "" : "s"}`, "success");
+        toast(`Imported ${data.inserted} ${cfg.singular}${data.inserted === 1 ? "" : "s"}`, "success");
         onImported();
       } else if (data.skipped > 0) {
-        toast(`No new suppliers — ${data.skipped} already existed`, "info");
+        toast(`No new ${cfg.singular}s — ${data.skipped} already existed`, "info");
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Import failed");
@@ -312,14 +366,14 @@ function ImportSuppliersModal({ clientId, open, onClose, onImported }: ImportMod
         className="modal"
         role="dialog"
         aria-modal="true"
-        aria-label="Import suppliers from Excel"
+        aria-label={cfg.importTitle}
         onClick={(e) => e.stopPropagation()}
         style={{ maxWidth: 520 }}
       >
         <div className="modal-head">
           <div className="modal-title">
             <Icon d={I.excel} size={16} />
-            Import suppliers from Excel
+            {cfg.importTitle}
           </div>
           <button className="iconbtn" onClick={onClose} aria-label="Close" disabled={loading}>
             <Icon d={I.x} size={14} />
@@ -416,27 +470,36 @@ function ImportSuppliersModal({ clientId, open, onClose, onImported }: ImportMod
 
 /* ── Client detail page ──────────────────────────────────────────── */
 
-export default function ClientDetailPage() {
+function ClientDetailView() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const { toast } = useToast();
   const clientId = params.id;
+
+  // Active tab is driven by the ?tab query param so it deep-links and the
+  // browser back button works. Anything other than "klanten" → Leveranciers.
+  const activeTab: Kind = kindFromTab(searchParams.get("tab"));
+  const cfg = KINDS[activeTab];
 
   const [client, setClient]     = useState<Client | null>(null);
   const [form, setForm]         = useState<ClientForm>(emptyClientForm);
   const [loading, setLoading]   = useState(true);
   const [saving, setSaving]     = useState(false);
-  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
-  const [supplierModal, setSupplierModal] = useState<{ open: boolean; editing: Supplier | null }>({ open: false, editing: null });
-  const [importOpen, setImportOpen] = useState(false);
+  const [suppliers, setSuppliers] = useState<Counterparty[]>([]);
+  const [customers, setCustomers] = useState<Counterparty[]>([]);
+  const [modal, setModal] = useState<{ open: boolean; kind: Kind; editing: Counterparty | null }>({ open: false, kind: "supplier", editing: null });
+  const [importState, setImportState] = useState<{ open: boolean; kind: Kind }>({ open: false, kind: "supplier" });
+
+  const list = activeTab === "customer" ? customers : suppliers;
+  const setList = activeTab === "customer" ? setCustomers : setSuppliers;
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [c, s] = await Promise.all([
-        apiJson<Client>(`/api/clients/${clientId}`),
-        apiJson<Supplier[]>(`/api/clients/${clientId}/suppliers`),
-      ]);
+      // Both arrays come nested in the client GET — no extra round-trips.
+      const c = await apiJson<Client & { suppliers?: Counterparty[]; customers?: Counterparty[] }>(`/api/clients/${clientId}`);
       setClient(c);
       setForm({
         name: c.name,
@@ -450,7 +513,8 @@ export default function ClientDetailPage() {
         relatie_code: c.relatie_code ?? "",
         notes: c.notes ?? "",
       });
-      setSuppliers(s);
+      setSuppliers(c.suppliers ?? []);
+      setCustomers(c.customers ?? []);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Could not load client", "error");
     } finally {
@@ -459,6 +523,11 @@ export default function ClientDetailPage() {
   }, [clientId, toast]);
 
   useEffect(() => { load(); }, [load]);
+
+  function selectTab(kind: Kind) {
+    if (kind === activeTab) return;
+    router.push(`${pathname}?tab=${KINDS[kind].tab}`, { scroll: false });
+  }
 
   async function saveClient() {
     if (!form.name.trim()) {
@@ -493,24 +562,25 @@ export default function ClientDetailPage() {
     }
   }
 
-  function openAddSupplier() { setSupplierModal({ open: true, editing: null }); }
-  function openEditSupplier(s: Supplier) { setSupplierModal({ open: true, editing: s }); }
-  function closeSupplierModal() { setSupplierModal({ open: false, editing: null }); }
+  function openAdd() { setModal({ open: true, kind: activeTab, editing: null }); }
+  function openEdit(s: Counterparty) { setModal({ open: true, kind: activeTab, editing: s }); }
+  function closeModal() { setModal((m) => ({ ...m, open: false, editing: null })); }
 
-  function onSupplierSaved(s: Supplier, isNew: boolean) {
-    setSuppliers((prev) => {
+  function onSaved(s: Counterparty, isNew: boolean) {
+    const setter = modal.kind === "customer" ? setCustomers : setSuppliers;
+    setter((prev) => {
       if (isNew) return [...prev, s].sort((a, b) => a.name.localeCompare(b.name));
       return prev.map((x) => x.id === s.id ? s : x);
     });
-    closeSupplierModal();
+    closeModal();
   }
 
-  async function deleteSupplier(s: Supplier) {
-    if (!confirm(`Delete supplier "${s.name}"? This cannot be undone.`)) return;
+  async function deleteRecord(s: Counterparty) {
+    if (!confirm(`Delete ${cfg.singular} "${s.name}"? This cannot be undone.`)) return;
     try {
-      const res = await fetch(`/api/clients/${clientId}/suppliers/${s.id}`, { method: "DELETE" });
+      const res = await fetch(`${cfg.apiBase(clientId)}/${s.id}`, { method: "DELETE" });
       if (!res.ok && res.status !== 204) throw new Error(`Delete failed (${res.status})`);
-      setSuppliers((prev) => prev.filter((x) => x.id !== s.id));
+      setList((prev) => prev.filter((x) => x.id !== s.id));
       toast(`${s.name} deleted`, "success");
     } catch (e) {
       toast(e instanceof Error ? e.message : "Delete failed", "error");
@@ -613,28 +683,56 @@ export default function ClientDetailPage() {
         </div>
       </section>
 
-      {/* Suppliers section */}
+      {/* Counterparties section — tabbed: Leveranciers / Klanten */}
       <section className="card" style={{ padding: 20 }}>
+        <div className="cp-tabs" role="tablist" aria-label="Counterparties" style={{ display: "flex", gap: 4, borderBottom: "1px solid var(--line)", marginBottom: 16 }}>
+          {(["supplier", "customer"] as Kind[]).map((k) => {
+            const kc = KINDS[k];
+            const count = k === "customer" ? customers.length : suppliers.length;
+            const isActive = k === activeTab;
+            return (
+              <button
+                key={k}
+                role="tab"
+                aria-selected={isActive}
+                className={`cp-tab${isActive ? " active" : ""}`}
+                onClick={() => selectTab(k)}
+                style={{
+                  appearance: "none",
+                  background: "none",
+                  border: "none",
+                  borderBottom: isActive ? "2px solid var(--accent)" : "2px solid transparent",
+                  color: isActive ? "var(--ink)" : "var(--muted)",
+                  fontWeight: isActive ? 600 : 500,
+                  fontSize: 14,
+                  padding: "8px 12px",
+                  marginBottom: -1,
+                  cursor: "pointer",
+                }}
+              >
+                {kc.tabLabel} <span style={{ color: "var(--faint)", fontWeight: 500 }}>({count})</span>
+              </button>
+            );
+          })}
+        </div>
+
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-          <div>
-            <h2 style={{ fontSize: 16, margin: 0 }}>Suppliers (Leveranciers)</h2>
-            <div className="sub" style={{ fontSize: 12 }}>
-              {suppliers.length} supplier{suppliers.length === 1 ? "" : "s"}
-            </div>
+          <div className="sub" style={{ fontSize: 12 }}>
+            {list.length} {cfg.singular}{list.length === 1 ? "" : "s"}
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            <button className="btn" onClick={() => setImportOpen(true)} title="Import suppliers from .xlsx">
+            <button className="btn" onClick={() => setImportState({ open: true, kind: activeTab })} title={cfg.importTitle}>
               <Icon d={I.excel} size={13} /> Import Excel
             </button>
-            <button className="btn primary" onClick={openAddSupplier}>
-              <Icon d={I.users} size={13} /> Add supplier
+            <button className="btn primary" onClick={openAdd}>
+              <Icon d={I.users} size={13} /> {cfg.addLabel}
             </button>
           </div>
         </div>
 
-        {suppliers.length === 0 ? (
+        {list.length === 0 ? (
           <div className="t-empty" style={{ padding: 24 }}>
-            No suppliers yet. Add one to map their relatie_code to invoices.
+            {cfg.emptyText}
           </div>
         ) : (
           <div style={{ overflowX: "auto" }}>
@@ -649,7 +747,7 @@ export default function ClientDetailPage() {
                 </tr>
               </thead>
               <tbody>
-                {suppliers.map((s) => (
+                {list.map((s) => (
                   <tr key={s.id}>
                     <td className="mono">{s.relatie_code || <span style={{ color: "var(--muted)" }}>—</span>}</td>
                     <td>
@@ -659,10 +757,10 @@ export default function ClientDetailPage() {
                     <td>{s.kvk || <span style={{ color: "var(--muted)" }}>—</span>}</td>
                     <td>{s.btw_number || <span style={{ color: "var(--muted)" }}>—</span>}</td>
                     <td style={{ textAlign: "right" }}>
-                      <button className="act" title="Edit" onClick={() => openEditSupplier(s)}>
+                      <button className="act" title="Edit" onClick={() => openEdit(s)}>
                         <Icon d={I.cog} size={14} />
                       </button>
-                      <button className="act" title="Delete" onClick={() => deleteSupplier(s)}>
+                      <button className="act" title="Delete" onClick={() => deleteRecord(s)}>
                         <Icon d={I.trash} size={14} />
                       </button>
                     </td>
@@ -674,20 +772,31 @@ export default function ClientDetailPage() {
         )}
       </section>
 
-      <SupplierModal
+      <CounterpartyModal
         clientId={clientId}
-        supplier={supplierModal.editing}
-        open={supplierModal.open}
-        onClose={closeSupplierModal}
-        onSaved={onSupplierSaved}
+        kind={modal.kind}
+        record={modal.editing}
+        open={modal.open}
+        onClose={closeModal}
+        onSaved={onSaved}
       />
 
-      <ImportSuppliersModal
+      <ImportCounterpartiesModal
         clientId={clientId}
-        open={importOpen}
-        onClose={() => setImportOpen(false)}
+        kind={importState.kind}
+        open={importState.open}
+        onClose={() => setImportState((s) => ({ ...s, open: false }))}
         onImported={load}
       />
     </main>
+  );
+}
+
+export default function ClientDetailPage() {
+  // useSearchParams() needs a Suspense boundary to keep `next build` happy.
+  return (
+    <Suspense fallback={<main className="main"><div className="t-empty">Loading client…</div></main>}>
+      <ClientDetailView />
+    </Suspense>
   );
 }
