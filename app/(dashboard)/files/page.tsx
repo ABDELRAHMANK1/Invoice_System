@@ -95,6 +95,17 @@ export default function FilesPage() {
     return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   }
 
+  // Upload time, readable: e.g. "18-06-2026 14:32".
+  function fmtDateTime(iso: string | null) {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "—";
+    return d.toLocaleString("nl-NL", {
+      day: "2-digit", month: "2-digit", year: "numeric",
+      hour: "2-digit", minute: "2-digit",
+    });
+  }
+
   const pageNums = Array.from({ length: Math.min(files.totalPages, 5) }, (_, i) => {
     if (files.totalPages <= 5) return i + 1;
     if (page <= 3) return i + 1;
@@ -125,12 +136,13 @@ export default function FilesPage() {
       )}
 
       <div className="table-card" style={{ borderTop: "1px solid var(--line)", borderRadius: "var(--r-lg)" }}>
-        <div className="t-head" style={{ gridTemplateColumns: "1.5fr 1fr 80px 100px 120px 90px 60px" }}>
+        <div className="t-head" style={{ gridTemplateColumns: "1.5fr 1fr 80px 100px 120px 150px 90px 60px" }}>
           <div>File</div>
           <div>Phone</div>
           <div>Type</div>
           <div>Size</div>
           <div>Direction</div>
+          <div>Uploaded</div>
           <div>Status</div>
           <div />
         </div>
@@ -144,7 +156,7 @@ export default function FilesPage() {
             <div
               key={file.id}
               className="t-row"
-              style={{ gridTemplateColumns: "1.5fr 1fr 80px 100px 120px 90px 60px", cursor: "default" }}
+              style={{ gridTemplateColumns: "1.5fr 1fr 80px 100px 120px 150px 90px 60px", cursor: "default" }}
             >
               <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
                 <span className="client-name">{file.file_name || file.file_key.split("/").pop()}</span>
@@ -162,6 +174,7 @@ export default function FilesPage() {
                   {file.invoice_direction === "verkoop" ? "Verkoop" : "Inkoop"}
                 </span>
               </div>
+              <div className="cell-date" style={{ fontVariantNumeric: "tabular-nums" }}>{fmtDateTime(file.created_at)}</div>
               <div>
                 <Pill tone={statusTone(file.status)}>{statusLabel(file.status)}</Pill>
               </div>

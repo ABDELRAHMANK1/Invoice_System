@@ -52,6 +52,10 @@ function makeSupabaseAdmin(vi) {
   };
   return {
     from: vi.fn((table) => ensure(table)),
+    // Postgres function calls (supabaseAdmin.rpc). Resolves like a real call to
+    // { data, error }; tests can inspect .rpc.mock.calls or override via
+    // mockResolvedValueOnce.
+    rpc: vi.fn(() => Promise.resolve({ data: null, error: null })),
     _table: ensure,
     _resetAll() {
       for (const chain of tables.values()) chain._reset();

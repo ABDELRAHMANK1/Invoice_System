@@ -310,6 +310,7 @@ export default function InvoicesPage() {
         filters={filtersForExport(committed)}
         ids={exportIds}
         onClose={() => { setExportOpen(false); setExportIds(undefined); }}
+        onComplete={load}
       />
 
       <UploadModal

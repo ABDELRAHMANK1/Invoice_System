@@ -304,7 +304,7 @@ this is intentional, do not change it.
   npm install
   npm run dev            # http://localhost:3000
   npm run build          # type-check + production build
-  npx vitest run         # ~129 unit tests
+  npx vitest run         # ~135 unit tests
   npx playwright test    # e2e tests
   ```
 - Key files:
@@ -312,7 +312,12 @@ this is intentional, do not change it.
     (verkoop + inkoop sheets, 25 cols each).
   - `lib/ai-extraction.ts` — OpenAI extraction prompt for AI fallback.
   - `app/api/export/route.ts` — Excel export endpoint, includes the fuzzy
-    Relatiecode lookup (`scoreMatch` uses Levenshtein for OCR typos).
+    Relatiecode lookup (`scoreMatch` uses Levenshtein for OCR typos). After a
+    successful Excel export (`runInlineExport`) it calls the
+    `increment_invoice_exports(uuid[])` RPC to bump `export_count` /
+    `last_exported_at` on every included invoice — a best-effort tracking hook
+    (logged, never fatal) that the Invoices table surfaces as "Exported?"/"Times".
+    The dashboard uses the inline path (`async_job: false`).
   - `app/api/clients/[id]/suppliers/...` — supplier CRUD + `/bulk` xlsx import.
   - `app/api/clients/[id]/customers/...` — customer CRUD + `/bulk` xlsx import
     (mirror of suppliers).
@@ -336,22 +341,40 @@ this is intentional, do not change it.
   CHECK that at most one is set (`invoices_one_counterparty`). Both-null stays
   legal — the n8n OCR pipeline inserts free-text rows with no FKs.
 - **Migrations** (run in order in the Supabase SQL editor): `003` clients.iban,
-  `004` invoice billing fields, `005` customers table + invoices.customer_id.
+  `004` invoice billing fields, `005` customers table + invoices.customer_id,
+  `006` invoices.customer_name (verkoop counterparty denormalisation),
+  `007` invoices.export_count + last_exported_at + `increment_invoice_exports`.
 
 ### Manual invoice creation + PDF generation
 
 - **Flow:** the dashboard "New invoice" button (`app/components/NewInvoiceModal.tsx`,
-  English UI) creates an **inkoop** invoice — a *client* received it *from* one of
-  its *suppliers* (the existing `suppliers` table, filtered by `client_id`).
+  English UI) creates either an **inkoop** OR a **verkoop** invoice — the creator
+  picks the **direction** with an explicit Inkoop/Verkoop toggle (default Inkoop,
+  never inferred). The first dropdown is always the *client*; the second dropdown's
+  label + data source follow the direction — **inkoop → "Supplier"** (the
+  `suppliers` table), **verkoop → "Customer"** (the `customers` table). Both lists
+  arrive in the single nested `GET /api/clients/:id` fetch (which returns
+  `suppliers` *and* `customers`); the second dropdown resets when the client OR the
+  direction changes (a supplier is not a valid customer).
 - **`POST /api/invoices`** (distinct from the n8n `POST /api/invoices/batch`):
-  accepts `client_id`, `supplier_id`, `description`, `line_items`, `btw_rate`;
-  **recomputes totals server-side** (`lib/billing.ts`, truncated to 2dp — never
-  trust client totals), denormalises `client_name`/`supplier_name`, renders a PDF
-  and uploads it to S3, returns JSON `{id, invoice_number, file_url}`.
-- **`lib/invoice-pdf.ts`** (pdfkit) matches the Akram Transport template: supplier =
-  issuer (top-right + Naar IBAN / Op naam van), client = bill-to (top-left),
-  Klantnummer = `supplier.relatie_code`, repeated header, running `Subtotaal` on
-  continued pages, footer BTW table + totals. Empty/nullable fields are omitted.
+  accepts `client_id`, **`invoice_direction`**, and `supplier_id` (inkoop) or
+  `customer_id` (verkoop) — the Zod schema `superRefine` requires the FK matching
+  the direction. Resolves the counterparty from the matching table, **recomputes
+  totals server-side** (`lib/billing.ts`, truncated to 2dp — never trust client
+  totals), and writes exactly one FK (`invoices_one_counterparty` CHECK):
+  inkoop → `supplier_id` + `supplier_name`; verkoop → `customer_id` +
+  `customer_name`. Renders a PDF, uploads to S3, returns `{id, invoice_number,
+  file_url}`.
+- **`lib/invoice-pdf.ts`** (pdfkit) matches the Akram Transport template and is
+  **direction-agnostic**: it takes role-based params **`issuer`** (top-right +
+  Naar IBAN / Op naam van) and **`billTo`** (top-left), plus
+  `meta.klantnummer`. The API route resolves the roles: **inkoop →** issuer =
+  supplier, billTo = client, klantnummer = supplier.relatie_code; **verkoop →**
+  issuer = client (its own `clients.iban`, `kvk_number`/`btw_number`; clients have
+  no `postcode`), billTo = customer, klantnummer = **customer**.relatie_code. Don't
+  re-derive direction inside the renderer — pass the resolved roles in. Repeated
+  header, running `Subtotaal` on continued pages, footer BTW table + totals; empty
+  fields omitted.
 - **pdfkit MUST stay unbundled.** `next.config.ts` sets
   `serverExternalPackages: ["pdfkit"]` (+ `outputFileTracingIncludes` for the deploy
   trace). Without it, Next bundles pdfkit and its `*.afm` font metrics go missing →

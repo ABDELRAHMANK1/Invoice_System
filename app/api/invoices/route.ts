@@ -9,8 +9,13 @@ import { uploadBuffer } from "@/lib/storage";
 
 export const runtime = "nodejs";
 
-// Manual invoice creation from the dashboard's "New invoice" form: a CLIENT
-// received this inkoop invoice FROM one of its SUPPLIERS. Totals are computed
+// Manual invoice creation from the dashboard's "New invoice" form. The creator
+// explicitly picks a DIRECTION (never inferred):
+//   • inkoop  — a CLIENT received this invoice FROM one of its SUPPLIERS.
+//   • verkoop — a CLIENT sent this invoice TO one of its CUSTOMERS.
+// The direction drives which counterparty table is queried, which FK is written
+// (supplier_id vs customer_id, never both — see the invoices_one_counterparty
+// CHECK), and which party is the PDF issuer vs bill-to. Totals are computed
 // server-side (never trusted from the client), a PDF is rendered + stored in
 // S3, and file_url is set to that PDF. The n8n OCR pipeline uses a different
 // endpoint (/api/invoices/batch) and is unaffected.
@@ -23,16 +28,26 @@ const lineItemSchema = z.object({
 });
 
 const createSchema = z.object({
-  invoice_number:  z.string().trim().min(1, "Invoice number is required"),
-  client_id:       z.string().uuid("A client must be selected"),
-  supplier_id:     z.string().uuid("A supplier must be selected"),
-  date:            dateField,
-  delivery_date:   dateField,
-  description:     z.string().trim().max(500).optional().nullable(),
-  order_reference: z.string().trim().max(200).optional().nullable(),
-  line_items:      z.array(lineItemSchema).min(1, "At least one line item is required"),
-  btw_rate:        z.number().min(0).max(100),
-  currency:        z.string().trim().length(3).optional().nullable(),
+  invoice_number:    z.string().trim().min(1, "Invoice number is required"),
+  client_id:         z.string().uuid("A client must be selected"),
+  invoice_direction: z.enum(["inkoop", "verkoop"]).default("inkoop"),
+  supplier_id:       z.string().uuid("A supplier must be selected").optional().nullable(),
+  customer_id:       z.string().uuid("A customer must be selected").optional().nullable(),
+  date:              dateField,
+  delivery_date:     dateField,
+  description:       z.string().trim().max(500).optional().nullable(),
+  order_reference:   z.string().trim().max(200).optional().nullable(),
+  line_items:        z.array(lineItemSchema).min(1, "At least one line item is required"),
+  btw_rate:          z.number().min(0).max(100),
+  currency:          z.string().trim().length(3).optional().nullable(),
+}).superRefine((v, ctx) => {
+  // Require exactly the FK that matches the chosen direction.
+  if (v.invoice_direction === "inkoop" && !v.supplier_id) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["supplier_id"], message: "A supplier must be selected" });
+  }
+  if (v.invoice_direction === "verkoop" && !v.customer_id) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["customer_id"], message: "A customer must be selected" });
+  }
 });
 
 export async function POST(req: NextRequest) {
@@ -50,18 +65,24 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) return jsonError("Invalid invoice payload", 400, parsed.error.flatten());
   const v = parsed.data;
 
-  // Resolve client + supplier; the supplier must belong to the client.
+  const isInkoop = v.invoice_direction === "inkoop";
+
+  // Resolve client + the direction's counterparty (supplier for inkoop, customer
+  // for verkoop). The counterparty must belong to the client.
   const { data: client, error: cErr } = await supabaseAdmin
     .from("clients").select("*").eq("id", v.client_id).maybeSingle();
   if (cErr) return jsonError(cErr.message, 500);
   if (!client) return jsonError("Client not found", 404);
 
-  const { data: supplier, error: sErr } = await supabaseAdmin
-    .from("suppliers").select("*").eq("id", v.supplier_id).maybeSingle();
+  const counterpartyTable = isInkoop ? "suppliers" : "customers";
+  const counterpartyLabel = isInkoop ? "Supplier" : "Customer";
+  const counterpartyId = isInkoop ? v.supplier_id! : v.customer_id!;
+  const { data: counterparty, error: sErr } = await supabaseAdmin
+    .from(counterpartyTable).select("*").eq("id", counterpartyId).maybeSingle();
   if (sErr) return jsonError(sErr.message, 500);
-  if (!supplier) return jsonError("Supplier not found", 404);
-  if (supplier.client_id !== v.client_id) {
-    return jsonError("Supplier does not belong to the selected client", 400);
+  if (!counterparty) return jsonError(`${counterpartyLabel} not found`, 404);
+  if (counterparty.client_id !== v.client_id) {
+    return jsonError(`${counterpartyLabel} does not belong to the selected client`, 400);
   }
 
   // Server-authoritative totals (truncated to 2dp, matching the PDF).
@@ -70,13 +91,17 @@ export async function POST(req: NextRequest) {
   const deliveryDate = v.delivery_date || invoiceDate;
 
   // Insert first (no file_url yet) so a duplicate invoice_number fails cheaply
-  // via the unique constraint, before we spend effort rendering a PDF.
+  // via the unique constraint, before we spend effort rendering a PDF. Exactly
+  // one of supplier_id/customer_id is set (invoices_one_counterparty CHECK), and
+  // the counterparty name is denormalised into the matching *_name column.
   const insertRow = {
     invoice_number:    v.invoice_number,
     client_id:         v.client_id,
-    supplier_id:       v.supplier_id,
+    supplier_id:       isInkoop ? counterparty.id : null,
+    customer_id:       isInkoop ? null : counterparty.id,
     client_name:       client.name,                 // denormalised for the list + n8n parity
-    supplier_name:     supplier.name,
+    supplier_name:     isInkoop ? counterparty.name : null,
+    customer_name:     isInkoop ? null : counterparty.name,
     phone_number:      (client.phone_number ? normalizePhone(client.phone_number) : "") || "",
     date:              invoiceDate,
     description:       v.description?.trim() || null,
@@ -86,7 +111,7 @@ export async function POST(req: NextRequest) {
     btw_amount:        totals.btw_amount,
     total_amount:      totals.total,
     currency:          (v.currency || "EUR").toUpperCase(),
-    invoice_direction: "inkoop",
+    invoice_direction: v.invoice_direction,
     status:            "extracted",
     file_url:          "",
     confidence:        null,
@@ -101,16 +126,51 @@ export async function POST(req: NextRequest) {
   }
 
   // Render the PDF and store it in S3; set file_url to the stored object.
+  // Roles flip with direction: the issuer (top-right + Betaalgegevens) is the
+  // party collecting payment, the bill-to (top-left) is the party charged.
+  //   • inkoop  → issuer = supplier (counterparty), billTo = client
+  //   • verkoop → issuer = client,                  billTo = customer (counterparty)
+  // Note clients use kvk_number/btw_number and have no postcode column; suppliers
+  // and customers use kvk/postcode. Klantnummer is always the counterparty's
+  // relatie_code, passed explicitly so the renderer stays direction-agnostic.
+  const issuer = isInkoop
+    ? {
+        name:       counterparty.name,
+        address:    counterparty.address,
+        postcode:   counterparty.postcode,
+        city:       counterparty.city,
+        kvk:        counterparty.kvk,
+        btw_number: counterparty.btw_number,
+        iban:       counterparty.iban,
+        phone:      counterparty.phone,
+        email:      counterparty.email,
+      }
+    : {
+        name:       client.name,
+        address:    client.address,
+        postcode:   null,
+        city:       client.city,
+        kvk:        client.kvk_number,
+        btw_number: client.btw_number,
+        iban:       client.iban,
+        phone:      client.phone_number,
+        email:      client.email,
+      };
+  const billTo = isInkoop
+    ? { name: client.name, address: client.address, postcode: client.postcode ?? null, city: client.city }
+    : { name: counterparty.name, address: counterparty.address, postcode: counterparty.postcode, city: counterparty.city };
+
   try {
     const pdf = await buildInvoicePdf({
-      supplier,
-      client,
+      issuer,
+      billTo,
       meta: {
         invoice_number:  v.invoice_number,
         invoice_date:    invoiceDate,
         delivery_date:   deliveryDate,
         order_reference: v.order_reference ?? null,
         description:     v.description ?? null,
+        klantnummer:     counterparty.relatie_code ?? null,
       },
       totals,
     });
@@ -179,7 +239,7 @@ export async function GET(req: NextRequest) {
 
   let mainQuery = supabaseAdmin
     .from("invoices")
-    .select("id,file_id,phone_number,invoice_number,client_id,client_name,date,total_amount,currency,file_url,status,confidence,created_at,invoice_direction", {
+    .select("id,file_id,phone_number,invoice_number,client_id,client_name,date,total_amount,currency,file_url,status,confidence,created_at,invoice_direction,export_count,last_exported_at", {
       count: "exact"
     });
   mainQuery = applyFilters(mainQuery);

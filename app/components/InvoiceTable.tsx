@@ -53,6 +53,8 @@ export interface InvoiceRow {
   confidence: number | null;
   created_at: string;
   invoice_direction: "inkoop" | "verkoop" | null;
+  export_count?: number | null;
+  last_exported_at?: string | null;
 }
 
 function SortHead({
@@ -156,6 +158,8 @@ export function InvoiceTable({
         <div>Confidence</div>
         <div>Type</div>
         <div>Status</div>
+        <div style={{ textAlign: "center" }}>Exported?</div>
+        <div style={{ textAlign: "right" }}>Times</div>
         <div />
       </div>
 
@@ -174,6 +178,8 @@ export function InvoiceTable({
           const companySub    = row.sender_name && row.client_name ? row.client_name : null;
           const color    = avatarColor(senderDisplay, row.invoice_direction);
           const initials = clientInitials(senderDisplay);
+          const exportCount = row.export_count ?? 0;
+          const isExported  = exportCount > 0;
 
           return (
             <div
@@ -212,6 +218,16 @@ export function InvoiceTable({
               <div><ConfidenceBar pct={pct} /></div>
               <div><TypePill type={type} /></div>
               <div><Pill tone={statusTone(row.status)}>{statusLabel(row.status)}</Pill></div>
+
+              <div
+                style={{ textAlign: "center", color: isExported ? "var(--success, #1f8a5b)" : "var(--faint)", fontWeight: 700 }}
+                title={isExported && row.last_exported_at ? `Last exported ${new Date(row.last_exported_at).toLocaleString("nl-NL")}` : "Not yet exported"}
+              >
+                {isExported ? "✓" : "✗"}
+              </div>
+              <div style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", color: isExported ? "var(--ink)" : "var(--faint)" }}>
+                {exportCount}
+              </div>
 
               <div className="row-actions" onClick={(e) => e.stopPropagation()}>
                 <a

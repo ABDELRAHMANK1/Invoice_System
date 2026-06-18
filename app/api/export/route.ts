@@ -235,11 +235,22 @@ async function runInlineExport(req: NextRequest, jobId: string, body: z.infer<ty
 
     const invoices = await attachRelatieCodes(data || []);
 
-    return uploadInvoiceExcelExport({
+    const result = await uploadInvoiceExcelExport({
       invoices,
       jobId,
       baseUrl: req.nextUrl.origin
     });
+
+    // Tracking hook (additive — does not affect the export output): record that
+    // each included invoice was exported. Best-effort; a failure here must never
+    // fail the already-finished export, so it's logged, not thrown.
+    const exportedIds = invoices.map((inv) => inv.id).filter(Boolean);
+    if (exportedIds.length > 0) {
+      const { error: trackError } = await supabaseAdmin.rpc("increment_invoice_exports", { p_ids: exportedIds });
+      if (trackError) console.error("[export] export-count tracking failed:", trackError.message);
+    }
+
+    return result;
   }
 
   // ZIP: select file_key and convert to s3:// URI so signedReadUrl works correctly

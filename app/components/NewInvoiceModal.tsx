@@ -11,7 +11,9 @@ interface NewInvoiceModalProps {
 }
 
 type ClientOption = { id: string; name: string };
-type SupplierOption = { id: string; name: string; relatie_code: string | null; active: boolean };
+// Suppliers (inkoop) and customers (verkoop) share the same shape.
+type CounterpartyOption = { id: string; name: string; relatie_code: string | null; active: boolean };
+type Direction = "inkoop" | "verkoop";
 
 interface ItemRow {
   id: string;
@@ -59,9 +61,13 @@ function openPicker(e: React.MouseEvent<HTMLInputElement> | React.FocusEvent<HTM
 export function NewInvoiceModal({ open, onClose, onSuccess }: NewInvoiceModalProps) {
   const [clients, setClients] = useState<ClientOption[]>([]);
   const [clientId, setClientId] = useState("");
-  const [suppliers, setSuppliers] = useState<SupplierOption[]>([]);
-  const [supplierId, setSupplierId] = useState("");
-  const [loadingSuppliers, setLoadingSuppliers] = useState(false);
+  const [direction, setDirection] = useState<Direction>("inkoop");
+  // Both lists come from the single nested GET /api/clients/:id fetch; which one
+  // the second dropdown shows depends on the chosen direction.
+  const [suppliers, setSuppliers] = useState<CounterpartyOption[]>([]);
+  const [customers, setCustomers] = useState<CounterpartyOption[]>([]);
+  const [counterpartyId, setCounterpartyId] = useState("");
+  const [loadingCounterparties, setLoadingCounterparties] = useState(false);
 
   const [invoiceNumber, setInvoiceNumber] = useState("");
   const [invoiceDate, setInvoiceDate] = useState(todayISO());
@@ -77,7 +83,8 @@ export function NewInvoiceModal({ open, onClose, onSuccess }: NewInvoiceModalPro
   // Reset + load clients each time the modal opens.
   useEffect(() => {
     if (!open) return;
-    setClientId(""); setSuppliers([]); setSupplierId("");
+    setClientId(""); setDirection("inkoop");
+    setSuppliers([]); setCustomers([]); setCounterpartyId("");
     setInvoiceNumber(""); setInvoiceDate(todayISO()); setDeliveryDate(todayISO());
     setDescription(""); setBtwRate("21"); setItems([emptyRow()]);
     setSaving(false); setError(null);
@@ -92,15 +99,25 @@ export function NewInvoiceModal({ open, onClose, onSuccess }: NewInvoiceModalPro
     return () => document.removeEventListener("keydown", onKey);
   }, [open, onClose, saving]);
 
-  // When the client changes, load that client's suppliers (nested in GET :id).
+  // When the client changes, load that client's suppliers AND customers (both
+  // nested in GET :id) in one round-trip, and reset the counterparty selection.
   useEffect(() => {
-    if (!clientId) { setSuppliers([]); setSupplierId(""); return; }
-    setLoadingSuppliers(true); setSupplierId("");
-    apiJson<{ suppliers?: SupplierOption[] }>(`/api/clients/${clientId}`)
-      .then((c) => setSuppliers(c.suppliers || []))
-      .catch(() => setSuppliers([]))
-      .finally(() => setLoadingSuppliers(false));
+    if (!clientId) { setSuppliers([]); setCustomers([]); setCounterpartyId(""); return; }
+    setLoadingCounterparties(true); setCounterpartyId("");
+    apiJson<{ suppliers?: CounterpartyOption[]; customers?: CounterpartyOption[] }>(`/api/clients/${clientId}`)
+      .then((c) => { setSuppliers(c.suppliers || []); setCustomers(c.customers || []); })
+      .catch(() => { setSuppliers([]); setCustomers([]); })
+      .finally(() => setLoadingCounterparties(false));
   }, [clientId]);
+
+  // Switching direction invalidates the selected counterparty (a supplier under
+  // inkoop is not a valid customer under verkoop), so reset the second dropdown.
+  useEffect(() => { setCounterpartyId(""); }, [direction]);
+
+  // The second dropdown's data + labels follow the direction.
+  const counterparties = direction === "inkoop" ? suppliers : customers;
+  const counterpartyNoun = direction === "inkoop" ? "supplier" : "customer";
+  const counterpartyLabel = direction === "inkoop" ? "Supplier" : "Customer";
 
   function setItem(id: string, patch: Partial<ItemRow>) {
     setItems((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -116,7 +133,7 @@ export function NewInvoiceModal({ open, onClose, onSuccess }: NewInvoiceModalPro
 
   async function handleSave() {
     if (!clientId) return setError("Select a client");
-    if (!supplierId) return setError("Select a supplier");
+    if (!counterpartyId) return setError(`Select a ${counterpartyNoun}`);
     if (!invoiceNumber.trim()) return setError("Invoice number is required");
     const usable = parsedItems.filter((it) => it.quantity > 0 || it.unit_price > 0);
     if (usable.length === 0) return setError("Add at least one line item");
@@ -129,7 +146,9 @@ export function NewInvoiceModal({ open, onClose, onSuccess }: NewInvoiceModalPro
         body: JSON.stringify({
           invoice_number: invoiceNumber.trim(),
           client_id: clientId,
-          supplier_id: supplierId,
+          invoice_direction: direction,
+          supplier_id: direction === "inkoop" ? counterpartyId : null,
+          customer_id: direction === "verkoop" ? counterpartyId : null,
           date: invoiceDate || null,
           delivery_date: deliveryDate || null,
           description: description.trim() || null,
@@ -183,7 +202,36 @@ export function NewInvoiceModal({ open, onClose, onSuccess }: NewInvoiceModalPro
           <button className="iconbtn" onClick={onClose} aria-label="Close" disabled={saving}><Icon d={I.x} size={14} /></button>
         </div>
 
-        {/* Client + supplier */}
+        {/* Direction — chosen explicitly, never inferred. Drives the second
+            dropdown's source, the PDF issuer/bill-to roles, and which FK is written. */}
+        <div className="form-group">
+          <label className="form-label">Direction <span className="req">*</span></label>
+          <div role="radiogroup" aria-label="Invoice direction" style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden" }}>
+            {([
+              { v: "inkoop", label: "Inkoop" },
+              { v: "verkoop", label: "Verkoop" },
+            ] as Array<{ v: Direction; label: string }>).map(({ v, label }, i) => (
+              <button
+                key={v}
+                type="button"
+                role="radio"
+                aria-checked={direction === v}
+                onClick={() => setDirection(v)}
+                disabled={saving}
+                style={{
+                  padding: "7px 18px", fontSize: 13, fontWeight: 600, cursor: saving ? "default" : "pointer",
+                  border: "none", borderLeft: i === 0 ? "none" : "1px solid var(--line)",
+                  background: direction === v ? "var(--accent)" : "transparent",
+                  color: direction === v ? "#fff" : "var(--muted)",
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Client + counterparty (supplier for inkoop, customer for verkoop) */}
         <div style={{ display: "flex", gap: 12 }}>
           <div className="form-group" style={{ flex: 1 }}>
             <label className="form-label" htmlFor="ni-client">Client <span className="req">*</span></label>
@@ -193,10 +241,10 @@ export function NewInvoiceModal({ open, onClose, onSuccess }: NewInvoiceModalPro
             </select>
           </div>
           <div className="form-group" style={{ flex: 1 }}>
-            <label className="form-label" htmlFor="ni-supplier">Supplier <span className="req">*</span></label>
-            <select id="ni-supplier" className="form-input" value={supplierId} onChange={(e) => setSupplierId(e.target.value)} disabled={saving || !clientId || loadingSuppliers}>
-              <option value="">{!clientId ? "— Select a client first —" : loadingSuppliers ? "Loading…" : suppliers.length === 0 ? "— No suppliers —" : "— Select supplier —"}</option>
-              {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}{s.relatie_code ? ` (${s.relatie_code})` : ""}</option>)}
+            <label className="form-label" htmlFor="ni-counterparty">{counterpartyLabel} <span className="req">*</span></label>
+            <select id="ni-counterparty" className="form-input" value={counterpartyId} onChange={(e) => setCounterpartyId(e.target.value)} disabled={saving || !clientId || loadingCounterparties}>
+              <option value="">{!clientId ? "— Select a client first —" : loadingCounterparties ? "Loading…" : counterparties.length === 0 ? `— No ${counterpartyNoun}s —` : `— Select ${counterpartyNoun} —`}</option>
+              {counterparties.map((s) => <option key={s.id} value={s.id}>{s.name}{s.relatie_code ? ` (${s.relatie_code})` : ""}</option>)}
             </select>
           </div>
         </div>
