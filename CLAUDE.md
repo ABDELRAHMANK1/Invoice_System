@@ -17,8 +17,9 @@ End-to-end pieces:
   rule-based text extraction and PDF-to-image rendering.
 - **Next.js dashboard** — clients/suppliers CRUD, invoice list/edit,
   Snelstart Boekingen Excel export, bulk supplier import.
-- **Supabase** — Postgres + storage. Tables: `clients`, `suppliers`,
-  `invoices`, `files`, `export_jobs`.
+- **Supabase** — Postgres + storage. Tables: `clients`, `suppliers`
+  (parties a client buys from — inkoop), `customers` (parties a client sells
+  to — verkoop), `invoices`, `files`, `export_jobs`.
 - **S3 (eu-north-1)** — invoice file storage + signed Excel export downloads.
 
 Languages: TypeScript (Next.js + tests), Python (FastAPI parser). Money flows
@@ -162,7 +163,20 @@ These run only when `try_arithmetic` defers.
 11. **Slagerij Overschie** (`try_slagerij`) — per-line items `… | 15,96 | 9%`,
     summed per rate.
 
-VAT rate normalisation: anything not in `{0, 9, 21}` → `0`.
+VAT rate normalisation: anything not in `{0, 9, 21}` → `0` (so e.g. German
+`Umsatzsteuer 7%` yields `vat_rate = 0` — only Dutch BTW rates are modelled).
+
+**`total_amount` labels** (`extract_total_amount` / `TOTAL_LABELS`): recognises
+EN/NL/DE grand-total labels — `Total`, `Total Amount`, `Grand Total`, `Amount
+Due`, `Balance Due`; `Totaal`, `Totaalbedrag`, `Te betalen`, `Totaal incl`,
+`Eindtotaal`, `FACTUURBEDRAG`; `Gesamtbetrag`, `Gesamt`, `Endbetrag`,
+`Rechnungsbetrag`, `Zu zahlen`. The bare `Total`/`Totaal`/`Gesamt` labels are
+tried **last** and guarded by `_NOT_SUBTOTAL` (`(?!\s*(?:ex|excl|btw|vat|mwst|
+net|netto|ohne))`) so they don't grab `Total EX VAT` / `Totaal excl. btw` /
+`Totaal btw`. `parse_number` already handles both `1719.75` and `1.719,75` with
+currency on either side, so a total-only invoice (`Total: 1719.75 EUR` +
+`VAT 21%`) returns `total_amount` filled and an all-zero `vat_breakdown` (the
+dashboard then synthesises net/VAT from `vat_rate + total_amount`).
 
 **Total reconciliation** (`parse_invoice`): after the breakdown is built, if the
 sum of `net+vat` exceeds the label-extracted `total_amount`, the sum wins. This
@@ -170,6 +184,17 @@ recovers the total when no total label fired (Sunflower inline, Deniz) or a
 label grabbed a net cell (Sunflower table's `Totaalbedrag`). It only overrides
 *upward* — a label total already above the breakdown means a row is missing, not
 wrong, so it's left intact.
+
+### ⚠️ Uncommitted WIP in the working tree
+
+`pdf-service/invoice_parser.py` has **uncommitted, undeployed** local changes on
+top of the last commit — a `try_line_items` last-resort fallback (sums a bare
+product table by per-line rate when arithmetic + all patterns defer) and a
+`try_sunflower` hardening (amounts must be money on the same line, with a
+`vat ≈ net×rate` sanity check). Tested locally (full regression + the SAFE/S&F/
+Welfruit line-item invoices), but deliberately kept **separate** from the
+deployed total-label fix. Don't bundle it into an unrelated deploy without
+re-verifying; the live VPS does **not** have it.
 
 ### Local tests
 
@@ -279,8 +304,8 @@ this is intentional, do not change it.
   npm install
   npm run dev            # http://localhost:3000
   npm run build          # type-check + production build
-  npx vitest run         # 98 unit tests
-  npx playwright test    # 12 e2e tests
+  npx vitest run         # ~129 unit tests
+  npx playwright test    # e2e tests
   ```
 - Key files:
   - `lib/export-builders.ts` — Snelstart Boekingen Excel builder
@@ -289,7 +314,29 @@ this is intentional, do not change it.
   - `app/api/export/route.ts` — Excel export endpoint, includes the fuzzy
     Relatiecode lookup (`scoreMatch` uses Levenshtein for OCR typos).
   - `app/api/clients/[id]/suppliers/...` — supplier CRUD + `/bulk` xlsx import.
-  - `app/(dashboard)/clients/[id]/page.tsx` — client detail + supplier table.
+  - `app/api/clients/[id]/customers/...` — customer CRUD + `/bulk` xlsx import
+    (mirror of suppliers).
+  - `app/(dashboard)/clients/[id]/page.tsx` — client detail with tabbed
+    Suppliers / Customers tables.
+
+### Clients, suppliers & customers (Klanten)
+
+- A **client** (the company we do accounting for) has two kinds of counterparties,
+  each its own top-level table keyed by `client_id` (NOT a unified table — keeps
+  the suppliers/export/n8n code untouched):
+  - **`suppliers`** — parties the client BUYS from (inkoop). Feeds the Excel
+    export's fuzzy Relatiecode lookup.
+  - **`customers`** — parties the client SELLS to (verkoop). Added in migration
+    `005`; a column-for-column mirror of the live `suppliers` schema. The verkoop
+    invoice flow isn't built yet — these are just managed records.
+- `GET /api/clients/:id` returns the client with **both** `suppliers` and
+  `customers` nested (active-first, then by name), so the modal / detail tabs
+  populate from one fetch.
+- `invoices` has both `supplier_id` (inkoop) and `customer_id` (verkoop), with a
+  CHECK that at most one is set (`invoices_one_counterparty`). Both-null stays
+  legal — the n8n OCR pipeline inserts free-text rows with no FKs.
+- **Migrations** (run in order in the Supabase SQL editor): `003` clients.iban,
+  `004` invoice billing fields, `005` customers table + invoices.customer_id.
 
 ### Manual invoice creation + PDF generation
 
