@@ -104,3 +104,10 @@ alter table public.files
 alter table public.invoices
   add column if not exists invoice_direction text not null default 'inkoop'
     check (invoice_direction in ('inkoop', 'verkoop'));
+
+-- ── Migration 006: invoices.customer_name (verkoop counterparty) ──────────────
+-- Denormalised customer name for manual VERKOOP invoices, mirroring
+-- supplier_name (inkoop). See db/migrations/006_invoices_customer_name.sql.
+
+alter table public.invoices
+  add column if not exists customer_name text;

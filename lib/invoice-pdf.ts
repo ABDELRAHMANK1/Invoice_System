@@ -1,7 +1,7 @@
 // Server-side invoice PDF, built with pdfkit to mirror the reference
 // "Akram Transport" layout:
-//   • repeated top header — supplier (issuer) top-right, client (bill-to) under
-//     the bold "Factuur" heading top-left
+//   • repeated top header — ISSUER top-right, BILL-TO under the bold "Factuur"
+//     heading top-left
 //   • page 1: Betaalgegevens box (left) + invoice metadata (right)
 //   • items table: Omschrijving | Aantal | Prijs | Totaal
 //   • running "Subtotaal" at the bottom of every continued page
@@ -10,12 +10,21 @@
 //   • "x / n" page numbers
 //
 // Empty/nullable fields are omitted (no blank "Btw-nr" rows, etc).
+//
+// The renderer is direction-AGNOSTIC: it only knows "issuer" (the party sending
+// the invoice + collecting payment) and "billTo" (the party being charged). The
+// caller resolves which real record fills each role:
+//   • inkoop  → issuer = supplier, billTo = client
+//   • verkoop → issuer = client,   billTo = customer
+// "Klantnummer" is the counterparty's relatie_code (supplier for inkoop,
+// customer for verkoop), so it is passed in explicitly via meta.klantnummer
+// rather than re-derived here.
 
 import PDFDocument from "pdfkit";
 import type { InvoiceTotals } from "@/lib/billing";
 import { formatNL } from "@/lib/billing";
 
-export interface SupplierInfo {
+export interface IssuerInfo {
   name: string;
   address?: string | null;
   postcode?: string | null;
@@ -25,10 +34,9 @@ export interface SupplierInfo {
   iban?: string | null;
   phone?: string | null;
   email?: string | null;
-  relatie_code?: string | null;   // → "Klantnummer"
 }
 
-export interface ClientInfo {
+export interface BillToInfo {
   name: string;
   address?: string | null;
   postcode?: string | null;
@@ -41,11 +49,12 @@ export interface InvoiceMeta {
   delivery_date?: string | null;   // Leverdatum
   order_reference?: string | null; // Orderreferentie (optional)
   description?: string | null;     // Omschrijving
+  klantnummer?: string | null;     // counterparty relatie_code → "Klantnummer"
 }
 
 export interface BuildInvoicePdfParams {
-  supplier: SupplierInfo;
-  client: ClientInfo;
+  issuer: IssuerInfo;
+  billTo: BillToInfo;
   meta: InvoiceMeta;
   totals: InvoiceTotals;
 }
@@ -84,7 +93,7 @@ function fmtDateNL(iso?: string | null): string {
 }
 
 export function buildInvoicePdf(params: BuildInvoicePdfParams): Promise<Buffer> {
-  const { supplier, client, meta, totals } = params;
+  const { issuer, billTo, meta, totals } = params;
   const doc = new PDFDocument({ size: "A4", margin: MARGIN, bufferPages: true });
   const chunks: Buffer[] = [];
   doc.on("data", (c: Buffer) => chunks.push(c));
@@ -92,29 +101,29 @@ export function buildInvoicePdf(params: BuildInvoicePdfParams): Promise<Buffer> 
 
   // ── repeated top header; returns the y where page content may begin ──
   function drawHeader(): number {
-    // Right block — supplier (issuer)
+    // Right block — issuer
     let ry = 50;
     const rw = RIGHT - RIGHT_COL_X;
-    doc.fillColor(INK).font("Helvetica-Bold").fontSize(11).text(supplier.name, RIGHT_COL_X, ry, { width: rw });
+    doc.fillColor(INK).font("Helvetica-Bold").fontSize(11).text(issuer.name, RIGHT_COL_X, ry, { width: rw });
     ry = doc.y;
     doc.font("Helvetica").fontSize(9.5).fillColor(MUTED);
-    if (supplier.address) { doc.text(supplier.address, RIGHT_COL_X, ry, { width: rw }); ry = doc.y; }
-    const pc = [supplier.postcode, supplier.city].filter(Boolean).join(" ");
+    if (issuer.address) { doc.text(issuer.address, RIGHT_COL_X, ry, { width: rw }); ry = doc.y; }
+    const pc = [issuer.postcode, issuer.city].filter(Boolean).join(" ");
     if (pc) { doc.text(pc, RIGHT_COL_X, ry, { width: rw }); ry = doc.y; }
-    if (supplier.phone) {
-      doc.font("Helvetica-Bold").text("t", RIGHT_COL_X, ry, { continued: true }).font("Helvetica").text(`  ${supplier.phone}`);
+    if (issuer.phone) {
+      doc.font("Helvetica-Bold").text("t", RIGHT_COL_X, ry, { continued: true }).font("Helvetica").text(`  ${issuer.phone}`);
       ry = doc.y;
     }
-    if (supplier.email) {
-      doc.font("Helvetica-Bold").text("e", RIGHT_COL_X, ry, { continued: true }).font("Helvetica").text(`  ${supplier.email}`);
+    if (issuer.email) {
+      doc.font("Helvetica-Bold").text("e", RIGHT_COL_X, ry, { continued: true }).font("Helvetica").text(`  ${issuer.email}`);
       ry = doc.y;
     }
     // IBAN / Btw-nr / KvK label grid
     ry += 8;
     const grid: Array<[string, string | null | undefined]> = [
-      ["IBAN", supplier.iban],
-      ["Btw-nr", supplier.btw_number],
-      ["KvK", supplier.kvk],
+      ["IBAN", issuer.iban],
+      ["Btw-nr", issuer.btw_number],
+      ["KvK", issuer.kvk],
     ];
     for (const [label, value] of grid) {
       if (!value) continue;
@@ -124,14 +133,14 @@ export function buildInvoicePdf(params: BuildInvoicePdfParams): Promise<Buffer> 
     }
     const rightBottom = ry;
 
-    // Left block — "Factuur" + client (bill-to)
+    // Left block — "Factuur" + bill-to
     doc.fillColor(INK).font("Helvetica-Bold").fontSize(22).text("Factuur", MARGIN, 95);
     let ly = 132;
-    doc.font("Helvetica-Bold").fontSize(10.5).fillColor(INK).text(client.name, MARGIN, ly, { width: 260 });
+    doc.font("Helvetica-Bold").fontSize(10.5).fillColor(INK).text(billTo.name, MARGIN, ly, { width: 260 });
     ly = doc.y;
     doc.font("Helvetica").fontSize(9.5).fillColor(MUTED);
-    if (client.address) { doc.text(client.address, MARGIN, ly, { width: 260 }); ly = doc.y; }
-    const cpc = [client.postcode, client.city].filter(Boolean).join(" ");
+    if (billTo.address) { doc.text(billTo.address, MARGIN, ly, { width: 260 }); ly = doc.y; }
+    const cpc = [billTo.postcode, billTo.city].filter(Boolean).join(" ");
     if (cpc) { doc.text(cpc, MARGIN, ly, { width: 260 }); ly = doc.y; }
 
     return Math.max(rightBottom, ly) + 24;
@@ -143,8 +152,8 @@ export function buildInvoicePdf(params: BuildInvoicePdfParams): Promise<Buffer> 
     const boxX = MARGIN, boxW = 250;
     const rows: Array<[string, string]> = [
       ["Te betalen", euro(totals.total)],
-      ["Naar IBAN", supplier.iban || ""],
-      ["Op naam van", supplier.name],
+      ["Naar IBAN", issuer.iban || ""],
+      ["Op naam van", issuer.name],
       ["Omschrijving", meta.description || `Factuur ${meta.invoice_number}`],
     ].filter(([, v]) => v) as Array<[string, string]>;
     const boxH = 22 + rows.length * 18 + 8;
@@ -166,7 +175,7 @@ export function buildInvoicePdf(params: BuildInvoicePdfParams): Promise<Buffer> 
       ["Factuurdatum", fmtDateNL(meta.invoice_date)],
       ["Orderreferentie", meta.order_reference || ""],
       ["", ""],
-      ["Klantnummer", supplier.relatie_code || ""],
+      ["Klantnummer", meta.klantnummer || ""],
       ["Leverdatum", fmtDateNL(meta.delivery_date)],
     ];
     let my = top;

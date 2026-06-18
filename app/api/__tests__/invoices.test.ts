@@ -19,6 +19,7 @@ import { GET, POST } from "@/app/api/invoices/route";
 
 const CID = "11111111-1111-1111-1111-111111111111";
 const SID = "22222222-2222-2222-2222-222222222222";
+const CUSTID = "33333333-3333-3333-3333-333333333333";
 
 // Seed clients + suppliers so a manual create can resolve them.
 function seedClientAndSupplier() {
@@ -28,6 +29,18 @@ function seedClientAndSupplier() {
   });
   mockSupabase._table("suppliers")._setResult({
     data: { id: SID, client_id: CID, name: "Buki Koeriers B.V.", relatie_code: "4", iban: "NL91", btw_number: "NL8", kvk: "931" },
+    error: null,
+  });
+}
+
+// Seed clients + customers so a manual VERKOOP create can resolve them.
+function seedClientAndCustomer() {
+  mockSupabase._table("clients")._setResult({
+    data: { id: CID, name: "Akram Transport B.V.", phone_number: "+31600000000", iban: "NL00", address: "Govert Flinckstraat 18" },
+    error: null,
+  });
+  mockSupabase._table("customers")._setResult({
+    data: { id: CUSTID, client_id: CID, name: "Albert Heijn B.V.", relatie_code: "7", iban: "NL22", btw_number: "NL5", kvk: "555" },
     error: null,
   });
 }
@@ -207,5 +220,65 @@ describe("POST /api/invoices (manual create, inkoop)", () => {
     mockSupabase._table("invoices")._setResult({ data: null, error: { code: "23505", message: "duplicate key" } });
     const res = await POST(postReq(validBody));
     expect(res.status).toBe(409);
+  });
+});
+
+describe("POST /api/invoices (manual create, verkoop)", () => {
+  const validVerkoopBody = {
+    invoice_number: "V-200",
+    client_id: CID,
+    invoice_direction: "verkoop",
+    customer_id: CUSTID,
+    date: "2026-06-16",
+    delivery_date: "2026-06-16",
+    description: "Factuur V-200",
+    btw_rate: 21,
+    line_items: [{ description: "Levering", quantity: 10, unit_price: 30 }],
+  };
+
+  it("writes customer_id (supplier_id null) + denormalised customer_name, direction verkoop", async () => {
+    seedClientAndCustomer();
+    const t = mockSupabase._table("invoices");
+    t._setResult({ data: { id: "inv9", invoice_number: "V-200" }, error: null });
+
+    const res = await POST(postReq(validVerkoopBody));
+    expect(res.status).toBe(201);
+
+    const row = t._calls.find((c: { method: string; args: unknown[] }) => c.method === "insert")!.args[0] as Record<string, unknown>;
+    expect(row.invoice_direction).toBe("verkoop");
+    expect(row.customer_id).toBe(CUSTID);
+    expect(row.supplier_id).toBeNull();
+    expect(row.customer_name).toBe("Albert Heijn B.V.");
+    expect(row.supplier_name).toBeNull();
+    expect(row.client_id).toBe(CID);
+    expect(row.client_name).toBe("Akram Transport B.V.");
+    // Totals still computed server-side (10*30 = 300; 21% → 63; total 363).
+    expect(row.subtotal).toBe(300);
+    expect(row.btw_amount).toBe(63);
+    expect(row.total_amount).toBe(363);
+  });
+
+  it("queries the customers table (not suppliers) for the counterparty", async () => {
+    seedClientAndCustomer();
+    mockSupabase._table("invoices")._setResult({ data: { id: "inv10", invoice_number: "V-201" }, error: null });
+
+    await POST(postReq({ ...validVerkoopBody, invoice_number: "V-201" }));
+
+    // suppliers must not have been touched in the verkoop path.
+    expect(mockSupabase._table("suppliers")._calls.length).toBe(0);
+    expect(mockSupabase._table("customers")._calls.length).toBeGreaterThan(0);
+  });
+
+  it("rejects verkoop with a missing customer_id (400)", async () => {
+    const { customer_id, ...noCustomer } = validVerkoopBody;  // eslint-disable-line @typescript-eslint/no-unused-vars
+    const res = await POST(postReq(noCustomer));
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects when the customer does not belong to the client (400)", async () => {
+    mockSupabase._table("clients")._setResult({ data: { id: CID, name: "Akram" }, error: null });
+    mockSupabase._table("customers")._setResult({ data: { id: CUSTID, client_id: "99999999-9999-9999-9999-999999999999", name: "X" }, error: null });
+    const res = await POST(postReq(validVerkoopBody));
+    expect(res.status).toBe(400);
   });
 });
