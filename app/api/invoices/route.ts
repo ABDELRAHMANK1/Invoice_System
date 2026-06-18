@@ -239,7 +239,7 @@ export async function GET(req: NextRequest) {
 
   let mainQuery = supabaseAdmin
     .from("invoices")
-    .select("id,file_id,phone_number,invoice_number,client_id,client_name,date,total_amount,currency,file_url,status,confidence,created_at,invoice_direction", {
+    .select("id,file_id,phone_number,invoice_number,client_id,client_name,date,total_amount,currency,file_url,status,confidence,created_at,invoice_direction,export_count,last_exported_at", {
       count: "exact"
     });
   mainQuery = applyFilters(mainQuery);

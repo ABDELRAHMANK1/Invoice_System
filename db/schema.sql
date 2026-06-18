@@ -111,3 +111,22 @@ alter table public.invoices
 
 alter table public.invoices
   add column if not exists customer_name text;
+
+-- ── Migration 007: invoices export tracking ───────────────────────────────────
+-- export_count / last_exported_at + increment_invoice_exports(uuid[]), bumped
+-- whenever an invoice is included in a successful Excel export.
+-- See db/migrations/007_invoices_export_tracking.sql.
+
+alter table public.invoices
+  add column if not exists export_count     integer not null default 0,
+  add column if not exists last_exported_at timestamptz;
+
+create or replace function public.increment_invoice_exports(p_ids uuid[])
+returns void
+language sql
+as $$
+  update public.invoices
+     set export_count     = export_count + 1,
+         last_exported_at = now()
+   where id = any(p_ids);
+$$;

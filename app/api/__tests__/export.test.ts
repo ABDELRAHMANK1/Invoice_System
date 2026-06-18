@@ -71,6 +71,30 @@ describe("POST /api/export — Excel", () => {
     expect(eqCalls).toContainEqual({ method: "eq", args: ["invoice_direction", "inkoop"] });
   });
 
+  it("tracks export inclusion via increment_invoice_exports for the included ids", async () => {
+    const exportJobs = mockSupabase._table("export_jobs");
+    exportJobs._setResult({
+      data: { id: "job-t", status: "processing", type: "excel", created_at: "x" },
+      error: null,
+    });
+    const invoices = mockSupabase._table("invoices");
+    invoices._setResult({ data: [sampleApiInvoiceRow], error: null });
+
+    await POST(jsonReq({ type: "excel", async_job: false }));
+
+    expect(mockSupabase.rpc).toHaveBeenCalledWith("increment_invoice_exports", { p_ids: [sampleApiInvoiceRow.id] });
+  });
+
+  it("does not track when a ZIP export runs (invoices untouched)", async () => {
+    const exportJobs = mockSupabase._table("export_jobs");
+    exportJobs._setResult({ data: { id: "job-zt", status: "processing", type: "zip", created_at: "x" }, error: null });
+    mockSupabase._table("files")._setResult({ data: [{ file_key: "files/a.pdf" }], error: null });
+
+    await POST(jsonReq({ type: "zip", async_job: false }));
+
+    expect(mockSupabase.rpc).not.toHaveBeenCalled();
+  });
+
   it("filters by ids[] (selection-based export) instead of common filters", async () => {
     const exportJobs = mockSupabase._table("export_jobs");
     exportJobs._setResult({

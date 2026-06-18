@@ -20,6 +20,8 @@ interface ExportModalProps {
   filters: Filters;
   ids?: string[];
   onClose: () => void;
+  /** Fired after a successful export, so the caller can refresh (e.g. updated export counts). */
+  onComplete?: () => void;
 }
 
 function triggerDownload(url: string, filename: string) {
@@ -43,7 +45,7 @@ async function pollJob(jobId: string, maxWait = 120_000): Promise<string> {
   throw new Error("Export timed out — try a smaller date range");
 }
 
-export function ExportModal({ open, type, filters, ids, onClose }: ExportModalProps) {
+export function ExportModal({ open, type, filters, ids, onClose, onComplete }: ExportModalProps) {
   const [direction, setDirection] = useState<Direction>("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -96,6 +98,7 @@ export function ExportModal({ open, type, filters, ids, onClose }: ExportModalPr
         const ext = type === "excel" ? "xlsx" : "zip";
         const filename = `oranji-export-${new Date().toISOString().slice(0, 10)}.${ext}`;
         triggerDownload(downloadUrl, filename);
+        onComplete?.();
         onClose();
       } else {
         throw new Error("Export completed but no download URL returned");

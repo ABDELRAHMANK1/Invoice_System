@@ -304,7 +304,7 @@ this is intentional, do not change it.
   npm install
   npm run dev            # http://localhost:3000
   npm run build          # type-check + production build
-  npx vitest run         # ~133 unit tests
+  npx vitest run         # ~135 unit tests
   npx playwright test    # e2e tests
   ```
 - Key files:
@@ -312,7 +312,12 @@ this is intentional, do not change it.
     (verkoop + inkoop sheets, 25 cols each).
   - `lib/ai-extraction.ts` — OpenAI extraction prompt for AI fallback.
   - `app/api/export/route.ts` — Excel export endpoint, includes the fuzzy
-    Relatiecode lookup (`scoreMatch` uses Levenshtein for OCR typos).
+    Relatiecode lookup (`scoreMatch` uses Levenshtein for OCR typos). After a
+    successful Excel export (`runInlineExport`) it calls the
+    `increment_invoice_exports(uuid[])` RPC to bump `export_count` /
+    `last_exported_at` on every included invoice — a best-effort tracking hook
+    (logged, never fatal) that the Invoices table surfaces as "Exported?"/"Times".
+    The dashboard uses the inline path (`async_job: false`).
   - `app/api/clients/[id]/suppliers/...` — supplier CRUD + `/bulk` xlsx import.
   - `app/api/clients/[id]/customers/...` — customer CRUD + `/bulk` xlsx import
     (mirror of suppliers).
@@ -337,7 +342,8 @@ this is intentional, do not change it.
   legal — the n8n OCR pipeline inserts free-text rows with no FKs.
 - **Migrations** (run in order in the Supabase SQL editor): `003` clients.iban,
   `004` invoice billing fields, `005` customers table + invoices.customer_id,
-  `006` invoices.customer_name (verkoop counterparty denormalisation).
+  `006` invoices.customer_name (verkoop counterparty denormalisation),
+  `007` invoices.export_count + last_exported_at + `increment_invoice_exports`.
 
 ### Manual invoice creation + PDF generation
 
