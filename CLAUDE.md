@@ -328,19 +328,29 @@ this is intentional, do not change it.
     (mirror of suppliers).
   - `app/(dashboard)/clients/[id]/page.tsx` — client detail with tabbed
     Suppliers / Customers tables.
-  - `scripts/convert-snelstart-import.ts` — standalone one-off CLI that converts
-    a raw Snelstart "Alle-facturen" export (header on row 6) into our verkoop
-    Boekingen sheet, reusing `buildInvoiceExcelBuffer`. Skips Concept rows,
-    derives the BTW rate from excl/incl (snap to {0,9,21}, else zero it).
-    Relatiecode comes ONLY from a fuzzy customer-name match against the
-    `customers` table (`lib/relatie-match`) — the source file's own Klantnummer
-    is deliberately ignored (different system). No confident match → Relatiecode
-    left blank (the builder's boekstuk fallback is disabled here via
-    `buildInvoiceExcelBuffer`'s `blankUnmatchedRelatiecode` option). **Reads**
-    customers, **never writes** to Supabase. Needs real Supabase env to match
-    (`set -a; . ./.env.local; set +a` then run). Run:
-    `npx tsx scripts/convert-snelstart-import.ts <in.xlsx>` (dry-run summary)
-    `[--out <file.xlsx>] [--client <uuid>]`.
+  - **Snelstart import** (raw "Alle-facturen" export → our verkoop Boekingen
+    sheet). The parse/BTW/match/summary core lives in **`lib/snelstart-convert.ts`**
+    (pure — no env/DB/IO; `convertSnelstartSheet(sheet, customers)` → `{rows,
+    summary}`), shared by a CLI and a dashboard page so the logic isn't forked:
+    - Rules: header on row 6; skip `Concept` rows; derive BTW from excl/incl
+      (snap to {0,9,21}, else zero it, row kept); Relatiecode ONLY from a fuzzy
+      customer-name match against the `customers` table (`lib/relatie-match`) —
+      the source file's own Klantnummer is deliberately ignored (different
+      system). No confident match → Relatiecode left **blank** (the builder's
+      boekstuk fallback is disabled via `buildInvoiceExcelBuffer`'s
+      `blankUnmatchedRelatiecode` option). **Reads** customers, **never writes**.
+    - `scripts/convert-snelstart-import.ts` — CLI shell. Needs real Supabase env
+      to match (`set -a; . ./.env.local; set +a` then run):
+      `npx tsx scripts/convert-snelstart-import.ts <in.xlsx>` (dry-run summary)
+      `[--out <file.xlsx>] [--client <uuid>]`.
+    - `app/api/snelstart-import/route.ts` — POST multipart (`file` xlsx +
+      `client_id`); validates type/size/shape, loads that client's customers,
+      converts, returns JSON `{summary, filename, file_base64}` (4xx on a
+      wrong-shape sheet).
+    - `app/(dashboard)/snelstart-import/page.tsx` — "Snelstart Import" sidebar
+      page: client picker + xlsx upload → shows the summary + unmatched-name list
+      + a download button. ⚠️ No auth (same known gap as the rest of the
+      dashboard — see §7 hosting note; do not add login here).
 
 ### Clients, suppliers & customers (Klanten)
 
