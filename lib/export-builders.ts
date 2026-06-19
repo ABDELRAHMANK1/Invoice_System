@@ -12,6 +12,9 @@ export interface InvoiceExportRow {
   invoice_number: string;
   client_name: string | null;
   supplier_name?: string | null;
+  /** Verkoop counterparty (the customer sold to) — denormalised name + FK. */
+  customer_name?: string | null;
+  customer_id?: string | null;
   phone_number: string;
   date: string | null;
   total_amount: number | null;
@@ -165,7 +168,7 @@ function inkoopRowSpecs(bd: VatBreakdownLike, totalIncl: number): InkoopRowSpec[
   ];
 }
 
-function writeInkoopSheet(workbook: ExcelJS.Workbook, invoices: InvoiceExportRow[]) {
+function writeInkoopSheet(workbook: ExcelJS.Workbook, invoices: InvoiceExportRow[], blankUnmatched = false) {
   const sheet = workbook.addWorksheet("Inkoop");
   sheet.columns = INKOOP_COLS.map(({ header, key, width }) => ({ header, key, width }));
 
@@ -182,9 +185,10 @@ function writeInkoopSheet(workbook: ExcelJS.Workbook, invoices: InvoiceExportRow
     const totalIncl = Number(inv.total_amount ?? 0);
     const party     = inv.supplier_name || inv.client_name || null;
     // Coerce to string so a numeric DB value can't crash .trim(); fall back to
-    // the per-invoice boekstuk when no supplier was matched in attachRelatieCodes.
+    // the per-invoice boekstuk when no supplier was matched in attachRelatieCodes
+    // (unless the caller asked to keep unmatched Relatiecodes blank).
     const codeStr     = inv.relatie_code == null ? "" : String(inv.relatie_code).trim();
-    const relatieCode = codeStr !== "" ? codeStr : boekstuk;
+    const relatieCode = codeStr !== "" ? codeStr : (blankUnmatched ? null : boekstuk);
     const bd        = readVatBreakdown(inv);
 
     inkoopRowSpecs(bd, totalIncl).forEach((spec) => {
@@ -267,8 +271,9 @@ interface VerkoopRowSpec {
   grootboeknaam: string;
   debet: number;
   credit: number;
-  /** Native Snelstart label — text, not numeric (verkoop convention). */
-  btwSoort: "Hoog" | "Laag" | "Geen";
+  /** Snelstart BtwSoort code: 0 = Geen, 1 = Laag, 2 = Hoog (numeric on BOTH
+   *  sheets — Ammar confirmed Snelstart's verkoop import accepts the codes). */
+  btwSoort: 0 | 1 | 2;
   grootboekrekeningType: "Balans" | "Verlies & Winst";
   grootboekFunctie: string;
 }
@@ -280,7 +285,7 @@ function verkoopRowSpecs(totalIncl: number, vatPct: 0 | 9 | 21): VerkoopRowSpec[
     grootboeknaam: "Debiteuren",
     debet: round2(totalIncl),
     credit: 0,
-    btwSoort: "Geen",
+    btwSoort: 0,
     grootboekrekeningType: "Balans",
     grootboekFunctie: "DagboekVerkoop",
   };
@@ -294,7 +299,7 @@ function verkoopRowSpecs(totalIncl: number, vatPct: 0 | 9 | 21): VerkoopRowSpec[
         grootboeknaam: "Omzet binnen EU diensten",
         debet: 0,
         credit: round2(totalIncl),
-        btwSoort: "Geen",
+        btwSoort: 0,
         grootboekrekeningType: "Verlies & Winst",
         grootboekFunctie: "VerkopenOmzetVrijgesteld",
       },
@@ -313,7 +318,7 @@ function verkoopRowSpecs(totalIncl: number, vatPct: 0 | 9 | 21): VerkoopRowSpec[
         grootboeknaam: "Btw af te dragen laag (verkopen)",
         debet: 0,
         credit: btw,
-        btwSoort: "Laag",
+        btwSoort: 1,
         grootboekrekeningType: "Balans",
         grootboekFunctie: "BtwAfTeDragenLaag",
       },
@@ -323,7 +328,7 @@ function verkoopRowSpecs(totalIncl: number, vatPct: 0 | 9 | 21): VerkoopRowSpec[
         grootboeknaam: "Omzet laag (diensten)",
         debet: 0,
         credit: net,
-        btwSoort: "Laag",
+        btwSoort: 1,
         grootboekrekeningType: "Verlies & Winst",
         grootboekFunctie: "VerkopenOmzetLaag",
       },
@@ -339,7 +344,7 @@ function verkoopRowSpecs(totalIncl: number, vatPct: 0 | 9 | 21): VerkoopRowSpec[
       grootboeknaam: "Btw af te dragen hoog (verkopen)",
       debet: 0,
       credit: btw,
-      btwSoort: "Hoog",
+      btwSoort: 2,
       grootboekrekeningType: "Balans",
       grootboekFunctie: "BtwAfTeDragenHoog",
     },
@@ -349,7 +354,7 @@ function verkoopRowSpecs(totalIncl: number, vatPct: 0 | 9 | 21): VerkoopRowSpec[
       grootboeknaam: "Omzet hoog (diensten)",
       debet: 0,
       credit: net,
-      btwSoort: "Hoog",
+      btwSoort: 2,
       grootboekrekeningType: "Verlies & Winst",
       grootboekFunctie: "VerkopenOmzetHoog",
     },
@@ -357,7 +362,7 @@ function verkoopRowSpecs(totalIncl: number, vatPct: 0 | 9 | 21): VerkoopRowSpec[
   ];
 }
 
-function writeVerkoopSheet(workbook: ExcelJS.Workbook, invoices: InvoiceExportRow[]) {
+function writeVerkoopSheet(workbook: ExcelJS.Workbook, invoices: InvoiceExportRow[], blankUnmatched = false) {
   const sheet = workbook.addWorksheet("Verkoop");
   sheet.columns = VERKOOP_COLS.map(({ header, key, width }) => ({ header, key, width }));
 
@@ -372,11 +377,15 @@ function writeVerkoopSheet(workbook: ExcelJS.Workbook, invoices: InvoiceExportRo
     const boekstuk  = idx + 1;
     const datum     = inv.date ? new Date(`${inv.date}T00:00:00`) : null;
     const totalIncl = Number(inv.total_amount ?? 0);
-    const party     = inv.client_name || null;
+    // Verkoop counterparty = the customer sold to (mirror of inkoop's
+    // supplier_name || client_name). Manual invoices set customer_name; the
+    // legacy free-text path only had client_name.
+    const party     = inv.customer_name || inv.client_name || null;
     // Coerce to string so a numeric DB value can't crash .trim(); fall back to
-    // the per-invoice boekstuk when no supplier was matched in attachRelatieCodes.
+    // the per-invoice boekstuk when no customer was matched — unless the caller
+    // asked to keep unmatched Relatiecodes blank (one-off converter).
     const codeStr     = inv.relatie_code == null ? "" : String(inv.relatie_code).trim();
-    const relatieCode = codeStr !== "" ? codeStr : boekstuk;
+    const relatieCode = codeStr !== "" ? codeStr : (blankUnmatched ? null : boekstuk);
 
     const rawExt = (inv.raw_extraction as Record<string, unknown>) ?? {};
     const rawVat = Number(rawExt.vat_rate ?? rawExt.btw_percentage ?? 21);
@@ -422,16 +431,28 @@ function writeVerkoopSheet(workbook: ExcelJS.Workbook, invoices: InvoiceExportRo
   });
 }
 
-export async function buildInvoiceExcelBuffer(invoices: InvoiceExportRow[]): Promise<Buffer> {
+export interface BuildInvoiceExcelOptions {
+  /** When a row has no resolved relatie_code, the Relatiecode cell normally
+   *  falls back to the per-invoice boekstuk. Set true to leave it BLANK instead
+   *  (used by the one-off Snelstart converter so unmatched customers stay empty
+   *  for manual fill-in). Default false → existing boekstuk fallback. */
+  blankUnmatchedRelatiecode?: boolean;
+}
+
+export async function buildInvoiceExcelBuffer(
+  invoices: InvoiceExportRow[],
+  options: BuildInvoiceExcelOptions = {},
+): Promise<Buffer> {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = "Oranji";
   workbook.created = new Date();
+  const blankUnmatched = options.blankUnmatchedRelatiecode ?? false;
 
   const verkoopInvoices = invoices.filter((inv) => (inv.invoice_direction ?? "inkoop") === "verkoop");
   const inkoopInvoices  = invoices.filter((inv) => (inv.invoice_direction ?? "inkoop") !== "verkoop");
 
-  if (verkoopInvoices.length > 0) writeVerkoopSheet(workbook, verkoopInvoices);
-  if (inkoopInvoices.length  > 0) writeInkoopSheet(workbook,  inkoopInvoices);
+  if (verkoopInvoices.length > 0) writeVerkoopSheet(workbook, verkoopInvoices, blankUnmatched);
+  if (inkoopInvoices.length  > 0) writeInkoopSheet(workbook,  inkoopInvoices,  blankUnmatched);
 
   // Workbook must have at least one sheet.
   if (workbook.worksheets.length === 0) writeInkoopSheet(workbook, []);

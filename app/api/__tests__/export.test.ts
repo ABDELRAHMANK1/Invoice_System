@@ -132,6 +132,55 @@ describe("POST /api/export — Excel", () => {
   });
 });
 
+describe("POST /api/export — verkoop Relatiecode from customers", () => {
+  function seedJobAndClient() {
+    mockSupabase._table("export_jobs")._setResult({
+      data: { id: "job-v", status: "processing", type: "excel", created_at: "x" }, error: null,
+    });
+    mockSupabase._table("clients")._setResult({
+      data: [{ id: "client-1", phone_number: "+31699999999", relatie_code: "C-1" }], error: null,
+    });
+  }
+
+  it("resolves relatie_code from the customers table via customer_id (not the client)", async () => {
+    seedJobAndClient();
+    mockSupabase._table("customers")._setResult({
+      data: [{ id: "cust-1", client_id: "client-1", name: "Albert Heijn B.V.", relatie_code: "7" }], error: null,
+    });
+    mockSupabase._table("invoices")._setResult({
+      data: [{
+        id: "aaaaaaaa-0000-0000-0000-000000000001", invoice_number: "V-1", phone_number: "+31699999999",
+        invoice_direction: "verkoop", customer_id: "cust-1", customer_name: "Albert Heijn B.V.",
+        client_name: "Ammar Co", total_amount: 121, raw_extraction: { vat_rate: 21 },
+      }], error: null,
+    });
+
+    await POST(jsonReq({ type: "excel", async_job: false, ids: ["aaaaaaaa-0000-0000-0000-000000000001"] }));
+
+    const passed = uploadInvoiceExcelExport.mock.calls[0][0].invoices;
+    expect(passed[0].relatie_code).toBe("7");        // from customers, NOT client's "C-1"
+  });
+
+  it("falls back to fuzzy-matching the customer name when no customer_id is set", async () => {
+    seedJobAndClient();
+    mockSupabase._table("customers")._setResult({
+      data: [{ id: "cust-2", client_id: "client-1", name: "RAJEH FOOD", relatie_code: "42" }], error: null,
+    });
+    mockSupabase._table("invoices")._setResult({
+      data: [{
+        id: "aaaaaaaa-0000-0000-0000-000000000002", invoice_number: "V-2", phone_number: "+31699999999",
+        invoice_direction: "verkoop", customer_id: null, customer_name: "Rajeh Food",
+        client_name: "Ammar Co", total_amount: 100, raw_extraction: { vat_rate: 0 },
+      }], error: null,
+    });
+
+    await POST(jsonReq({ type: "excel", async_job: false, ids: ["aaaaaaaa-0000-0000-0000-000000000002"] }));
+
+    const passed = uploadInvoiceExcelExport.mock.calls[0][0].invoices;
+    expect(passed[0].relatie_code).toBe("42");
+  });
+});
+
 describe("POST /api/export — ZIP", () => {
   it("collects file_keys and calls uploadZipExport with s3:// URIs", async () => {
     const exportJobs = mockSupabase._table("export_jobs");
