@@ -213,21 +213,21 @@ describe("buildInvoiceExcelBuffer — VERKOOP (sales) native Snelstart format", 
     expect(r2).toMatchObject({
       regel: 2, grootboek: 1671, grootboeknaam: "Btw af te dragen hoog (verkopen)",
       debet: 0, credit: 42, saldo: -42,
-      btwSoort: "Hoog", grootboekrekeningType: "Balans", grootboekFunctie: "BtwAfTeDragenHoog",
+      btwSoort: 2, grootboekrekeningType: "Balans", grootboekFunctie: "BtwAfTeDragenHoog",
     });
     expect(r1).toMatchObject({
       regel: 1, grootboek: 8200, grootboeknaam: "Omzet hoog (diensten)",
       debet: 0, credit: 200, saldo: -200,
-      btwSoort: "Hoog", grootboekrekeningType: "Verlies & Winst", grootboekFunctie: "VerkopenOmzetHoog",
+      btwSoort: 2, grootboekrekeningType: "Verlies & Winst", grootboekFunctie: "VerkopenOmzetHoog",
     });
     expect(r0).toMatchObject({
       regel: 0, grootboek: 1300, grootboeknaam: "Debiteuren",
       debet: 242, credit: 0, saldo: 242,
-      btwSoort: "Geen", grootboekrekeningType: "Balans", grootboekFunctie: "DagboekVerkoop",
+      btwSoort: 0, grootboekrekeningType: "Balans", grootboekFunctie: "DagboekVerkoop",
     });
   });
 
-  it("9% BTW → uses laag accounts (1670/8210), text btwSoort='Laag'", async () => {
+  it("9% BTW → uses laag accounts (1670/8210), numeric btwSoort=1", async () => {
     // total 109 incl 9% → net 100, btw 9
     const wb = await loadWorkbook([sampleInvoiceVerkoop9]);
     const sheet = wb.getWorksheet("Verkoop")!;
@@ -238,11 +238,11 @@ describe("buildInvoiceExcelBuffer — VERKOOP (sales) native Snelstart format", 
 
     expect(r2).toMatchObject({
       grootboek: 1670, grootboeknaam: "Btw af te dragen laag (verkopen)",
-      credit: 9, btwSoort: "Laag", grootboekFunctie: "BtwAfTeDragenLaag",
+      credit: 9, btwSoort: 1, grootboekFunctie: "BtwAfTeDragenLaag",
     });
     expect(r1).toMatchObject({
       grootboek: 8210, grootboeknaam: "Omzet laag (diensten)",
-      credit: 100, btwSoort: "Laag", grootboekFunctie: "VerkopenOmzetLaag",
+      credit: 100, btwSoort: 1, grootboekFunctie: "VerkopenOmzetLaag",
     });
   });
 
@@ -256,10 +256,10 @@ describe("buildInvoiceExcelBuffer — VERKOOP (sales) native Snelstart format", 
 
     expect(r1).toMatchObject({
       regel: 1, grootboek: 8170, grootboeknaam: "Omzet binnen EU diensten",
-      debet: 0, credit: 100, btwSoort: "Geen", grootboekFunctie: "VerkopenOmzetVrijgesteld",
+      debet: 0, credit: 100, btwSoort: 0, grootboekFunctie: "VerkopenOmzetVrijgesteld",
     });
     expect(r0).toMatchObject({
-      regel: 0, grootboek: 1300, debet: 100, credit: 0, btwSoort: "Geen",
+      regel: 0, grootboek: 1300, debet: 100, credit: 0, btwSoort: 0,
     });
   });
 
@@ -276,6 +276,19 @@ describe("buildInvoiceExcelBuffer — VERKOOP (sales) native Snelstart format", 
       expect(row.boekstuk).toBe(1);
       expect(row.bookingId).toBe(1);
     }
+  });
+
+  it("Relatienaam = customer_name when present (mirror of inkoop supplier_name), falling back to client_name", async () => {
+    const withCustomer = { ...sampleInvoiceVerkoop21, customer_name: "Albert Heijn B.V." };
+    const wb = await loadWorkbook([withCustomer]);
+    const sheet = wb.getWorksheet("Verkoop")!;
+    for (let r = 2; r <= 4; r++) {
+      expect(verkoopRow(sheet, r).relatienaam).toBe("Albert Heijn B.V.");
+      expect(verkoopRow(sheet, r).omschrijving).toBe("Albert Heijn B.V.");
+    }
+    // No customer_name → still falls back to client_name.
+    const wb2 = await loadWorkbook([sampleInvoiceVerkoop21]);
+    expect(verkoopRow(wb2.getWorksheet("Verkoop")!, 2).relatienaam).toBe("RAJEH FOOD");
   });
 
   it("Boekstuk + BookingId increment per verkoop invoice and stay identical across its rows", async () => {
@@ -485,6 +498,19 @@ describe("buildInvoiceExcelBuffer — multi-invoice & defaults", () => {
     const sheet = wb.getWorksheet("Inkoop")!;
     for (let r = 2; r <= 7; r++) {
       expect(String(sheet.getRow(r).getCell(I.relatiecode).value)).toBe("12");
+    }
+  });
+
+  it("blankUnmatchedRelatiecode leaves the Relatiecode cell empty instead of the boekstuk fallback", async () => {
+    // No relatie_code attached → default fills boekstuk; opt-in keeps it blank.
+    const buffer = await buildInvoiceExcelBuffer([sampleInvoiceVerkoop21], { blankUnmatchedRelatiecode: true });
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(buffer as unknown as ArrayBuffer);
+    const sheet = wb.getWorksheet("Verkoop")!;
+    for (let r = 2; r <= 4; r++) {
+      const cell = sheet.getRow(r).getCell(V.relatiecode).value;
+      expect(cell == null || cell === "").toBe(true);
+      expect(verkoopRow(sheet, r).relatienaam).toBe("RAJEH FOOD"); // name still present
     }
   });
 });

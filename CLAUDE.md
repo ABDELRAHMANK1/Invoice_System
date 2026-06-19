@@ -311,8 +311,13 @@ this is intentional, do not change it.
   - `lib/export-builders.ts` — Snelstart Boekingen Excel builder
     (verkoop + inkoop sheets, 25 cols each).
   - `lib/ai-extraction.ts` — OpenAI extraction prompt for AI fallback.
-  - `app/api/export/route.ts` — Excel export endpoint, includes the fuzzy
-    Relatiecode lookup (`scoreMatch` uses Levenshtein for OCR typos). After a
+  - `app/api/export/route.ts` — Excel export endpoint. Resolves the Snelstart
+    Relatiecode per invoice via `attachRelatieCodes`: phone → client, then
+    **inkoop** fuzzy-matches `supplier_name` against the client's `suppliers`,
+    **verkoop** uses the invoice's `customer_id` against `customers` (fuzzy
+    fallback on the customer name). The fuzzy matcher lives in
+    `lib/relatie-match.ts` (`scoreMatch`, Levenshtein-tolerant) — shared with
+    the standalone converter script. After a
     successful Excel export (`runInlineExport`) it calls the
     `increment_invoice_exports(uuid[])` RPC to bump `export_count` /
     `last_exported_at` on every included invoice — a best-effort tracking hook
@@ -323,6 +328,19 @@ this is intentional, do not change it.
     (mirror of suppliers).
   - `app/(dashboard)/clients/[id]/page.tsx` — client detail with tabbed
     Suppliers / Customers tables.
+  - `scripts/convert-snelstart-import.ts` — standalone one-off CLI that converts
+    a raw Snelstart "Alle-facturen" export (header on row 6) into our verkoop
+    Boekingen sheet, reusing `buildInvoiceExcelBuffer`. Skips Concept rows,
+    derives the BTW rate from excl/incl (snap to {0,9,21}, else zero it).
+    Relatiecode comes ONLY from a fuzzy customer-name match against the
+    `customers` table (`lib/relatie-match`) — the source file's own Klantnummer
+    is deliberately ignored (different system). No confident match → Relatiecode
+    left blank (the builder's boekstuk fallback is disabled here via
+    `buildInvoiceExcelBuffer`'s `blankUnmatchedRelatiecode` option). **Reads**
+    customers, **never writes** to Supabase. Needs real Supabase env to match
+    (`set -a; . ./.env.local; set +a` then run). Run:
+    `npx tsx scripts/convert-snelstart-import.ts <in.xlsx>` (dry-run summary)
+    `[--out <file.xlsx>] [--client <uuid>]`.
 
 ### Clients, suppliers & customers (Klanten)
 
@@ -393,9 +411,11 @@ this is intentional, do not change it.
 
 - **Number formatting in exports**: `#,##0.00`. Truncation, not banker's
   rounding (Excel cells store the float; the format is display-only).
-- **Btw-soort label**: text on verkoop sheet (`"Hoog"|"Laag"|"Geen"`),
-  numeric code on inkoop sheet (`0|1|2`). Do not "harmonise" them — Snelstart
-  imports each sheet under different rules.
+- **Btw-soort code**: numeric on BOTH sheets now — `0` = Geen, `1` = Laag,
+  `2` = Hoog. (Earlier the verkoop sheet used text `"Hoog"|"Laag"|"Geen"` and
+  this note warned against harmonising; Ammar has since confirmed Snelstart's
+  verkoop import accepts the numeric codes directly, so verkoop was switched to
+  match inkoop. Don't revert to text.)
 - **`relatie_code` is a TEXT column** in Supabase, not numeric — leading
   zeros matter. The export builder defensively `String(...).trim()`s it.
 - **vat_breakdown null = builder fallback**. An all-zero breakdown is

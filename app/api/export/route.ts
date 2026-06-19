@@ -5,95 +5,18 @@ import { jsonError, requireInternalApiKey } from "@/lib/http";
 import { applyCommonFilters, filtersFromRequest } from "@/lib/query";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { env } from "@/lib/env";
+import { scoreMatch } from "@/lib/relatie-match";
 
 export const runtime = "nodejs";
 
-type SupplierRow = { client_id: string; name: string; relatie_code: string | null };
-
-const SUPPLIER_STOPWORDS = new Set([
-  "b.v.", "bv", "b.v", "n.v.", "nv", "v.o.f.", "vof", "cv",
-  "de", "het", "den", "der",
-  "en", "&", "+",
-  "zn", "zonen", "gebr", "gebrs", "bros", "brothers",
-  "the", "of", "and", "co", "co.", "ltd", "inc", "gmbh",
-  "cash", "carry",
-]);
-
-function normaliseName(value: string | null | undefined): string {
-  return (value ?? "").trim().toLowerCase();
-}
-
-function significantTokens(value: string | null | undefined): string[] {
-  return normaliseName(value)
-    .replace(/[.,/\\()'"!?]/g, " ")
-    .split(/\s+/)
-    .map((t) => t.trim())
-    .filter((t) => t.length >= 2 && !SUPPLIER_STOPWORDS.has(t));
-}
+type RelationRow = { id: string; client_id: string; name: string; relatie_code: string | null };
 
 /**
- * Levenshtein edit distance between two strings.
- * Used to forgive minor OCR/extraction typos in supplier-name matching
- * (e.g. AI reads "Alaseel" when the DB has "Alseel" — one insertion).
- */
-function levenshtein(a: string, b: string): number {
-  if (a === b) return 0;
-  if (a.length === 0) return b.length;
-  if (b.length === 0) return a.length;
-  const prev: number[] = new Array(b.length + 1);
-  const curr: number[] = new Array(b.length + 1);
-  for (let j = 0; j <= b.length; j += 1) prev[j] = j;
-  for (let i = 1; i <= a.length; i += 1) {
-    curr[0] = i;
-    for (let j = 1; j <= b.length; j += 1) {
-      const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;
-      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
-    }
-    for (let j = 0; j <= b.length; j += 1) prev[j] = curr[j];
-  }
-  return prev[b.length];
-}
-
-/**
- * Two tokens are "similar" when they are either equal or within a small edit
- * distance, where the tolerated distance scales with token length so that
- * short tokens stay strict (avoids matching "BV" to "BB") but longer names
- * can absorb one or two character OCR mistakes.
- */
-function tokenSimilar(t1: string, t2: string): boolean {
-  if (t1 === t2) return true;
-  const minLen = Math.min(t1.length, t2.length);
-  if (minLen < 4) return false;
-  const allowed = minLen >= 8 ? 2 : 1;
-  return levenshtein(t1, t2) <= allowed;
-}
-
-/**
- * Score how well a DB supplier name matches an invoice supplier_name.
- * Counts overlapping significant tokens (with edit-distance tolerance), plus
- * a small bonus when either normalised name fully contains the other as a
- * substring. Zero = no match.
- */
-function scoreMatch(supplierName: string, invoiceSupplier: string): number {
-  const dbTokens  = significantTokens(supplierName);
-  const invTokens = significantTokens(invoiceSupplier);
-  if (dbTokens.length === 0 || invTokens.length === 0) return 0;
-
-  let overlap = 0;
-  for (const t of invTokens) {
-    if (dbTokens.some((db) => tokenSimilar(db, t))) overlap += 1;
-  }
-
-  const dbNorm  = normaliseName(supplierName);
-  const invNorm = normaliseName(invoiceSupplier);
-  const substringBonus = dbNorm.includes(invNorm) || invNorm.includes(dbNorm) ? 1 : 0;
-
-  return overlap + substringBonus;
-}
-
-/**
- * Look up supplier.relatie_code (inkoop) or client.relatie_code (verkoop) per invoice,
- * matched on phone_number → client_id and a token-based supplier-name fuzzy match.
+ * Resolve a Snelstart Relatiecode per invoice, matched on phone_number →
+ * client_id and then the counterparty:
+ *   • inkoop  → the client's SUPPLIERS, fuzzy-matched on supplier_name.
+ *   • verkoop → the client's CUSTOMERS, by customer_id when set, else
+ *               fuzzy-matched on the counterparty name (mirrors inkoop).
  */
 async function attachRelatieCodes(rows: InvoiceExportRow[]): Promise<InvoiceExportRow[]> {
   console.log(`[export.relatie] === attachRelatieCodes START === rows=${rows.length}`);
@@ -126,29 +49,51 @@ async function attachRelatieCodes(rows: InvoiceExportRow[]): Promise<InvoiceExpo
   }
   const clientIds = Array.from(new Set(clientRows.map((c) => c.id)));
 
-  const { data: supplierRows, error: supplierErr } = await supabaseAdmin
-    .from("suppliers")
-    .select("client_id,name,relatie_code")
-    .in("client_id", clientIds);
-  if (supplierErr) {
-    console.log(`[export.relatie] SUPPLIER QUERY ERROR: ${supplierErr.message}`);
-  }
-  console.log(`[export.relatie] supplier rows fetched: ${(supplierRows ?? []).length} for client_ids=${JSON.stringify(clientIds)}`);
+  // Fetch BOTH counterparty tables for the resolved clients in parallel:
+  // suppliers (inkoop) and customers (verkoop). Group by client_id, and index
+  // customers by id for the verkoop customer_id direct lookup.
+  const [{ data: supplierRows, error: supplierErr }, { data: customerRows, error: customerErr }] = await Promise.all([
+    supabaseAdmin.from("suppliers").select("id,client_id,name,relatie_code").in("client_id", clientIds),
+    supabaseAdmin.from("customers").select("id,client_id,name,relatie_code").in("client_id", clientIds),
+  ]);
+  if (supplierErr) console.log(`[export.relatie] SUPPLIER QUERY ERROR: ${supplierErr.message}`);
+  if (customerErr) console.log(`[export.relatie] CUSTOMER QUERY ERROR: ${customerErr.message}`);
+  console.log(`[export.relatie] supplier rows=${(supplierRows ?? []).length} customer rows=${(customerRows ?? []).length} for client_ids=${JSON.stringify(clientIds)}`);
 
-  const suppliersByClient = new Map<string, SupplierRow[]>();
-  for (const s of (supplierRows ?? []) as SupplierRow[]) {
+  const suppliersByClient = new Map<string, RelationRow[]>();
+  for (const s of (supplierRows ?? []) as RelationRow[]) {
     const list = suppliersByClient.get(s.client_id) ?? [];
     list.push(s);
     suppliersByClient.set(s.client_id, list);
   }
 
-  for (const cid of clientIds) {
-    const list = suppliersByClient.get(cid);
-    if (!list || list.length === 0) {
-      console.log(`[export.relatie] NO SUPPLIERS FOUND for client_id: ${cid}`);
-    } else {
-      console.log(`[export.relatie] client_id=${cid} has ${list.length} suppliers: ${JSON.stringify(list.map((s) => ({ name: s.name, code: s.relatie_code })))}`);
+  const customersByClient = new Map<string, RelationRow[]>();
+  const customersById = new Map<string, RelationRow>();
+  for (const c of (customerRows ?? []) as RelationRow[]) {
+    const list = customersByClient.get(c.client_id) ?? [];
+    list.push(c);
+    customersByClient.set(c.client_id, list);
+    customersById.set(c.id, c);
+  }
+
+  // Fuzzy-match a counterparty name against a client's relation list; returns
+  // the matched relatie_code or null. Mirrors the inkoop pattern for both sides.
+  function fuzzyCode(candidates: RelationRow[], invoiceName: string | null | undefined, label: string, invNo: string): string | null {
+    if (!invoiceName) {
+      console.log(`[export.relatie] inv=${invNo} ${label}=<empty> match=none`);
+      return null;
     }
+    let best: { row: RelationRow; score: number } | null = null;
+    for (const cand of candidates) {
+      const score = scoreMatch(cand.name, invoiceName);
+      if (score > 0 && (best === null || score > best.score)) best = { row: cand, score };
+    }
+    if (!best) {
+      console.log(`[export.relatie] inv=${invNo} ${label}="${invoiceName}" match=NONE`);
+      return null;
+    }
+    console.log(`[export.relatie] inv=${invNo} ${label}="${invoiceName}" matched="${best.row.name}" code=${best.row.relatie_code ?? "<null>"} score=${best.score}`);
+    return best.row.relatie_code;
   }
 
   return rows.map((row) => {
@@ -161,33 +106,22 @@ async function attachRelatieCodes(rows: InvoiceExportRow[]): Promise<InvoiceExpo
     const direction = row.invoice_direction ?? "inkoop";
 
     if (direction === "verkoop") {
-      console.log(`[export.relatie] inv=${row.invoice_number} verkoop → client_code=${client.relatie_code ?? "<null>"}`);
-      return { ...row, relatie_code: client.relatie_code };
-    }
-
-    const candidates = suppliersByClient.get(client.id) ?? [];
-    if (!row.supplier_name) {
-      console.log(`[export.relatie] inv=${row.invoice_number} supplier_name=<empty> match=none`);
-      return row;
-    }
-
-    let best: { supplier: SupplierRow; score: number } | null = null;
-    const scores: Array<{ name: string; code: string | null; score: number }> = [];
-    for (const s of candidates) {
-      const score = scoreMatch(s.name, row.supplier_name);
-      scores.push({ name: s.name, code: s.relatie_code, score });
-      if (score > 0 && (best === null || score > best.score)) {
-        best = { supplier: s, score };
+      // Primary: the customer FK set on the invoice (manual verkoop).
+      if (row.customer_id) {
+        const cust = customersById.get(row.customer_id);
+        if (cust?.relatie_code) {
+          console.log(`[export.relatie] inv=${row.invoice_number} verkoop customer_id=${row.customer_id} → code=${cust.relatie_code}`);
+          return { ...row, relatie_code: cust.relatie_code };
+        }
       }
+      // Fallback: fuzzy-match the counterparty name against the client's customers.
+      const code = fuzzyCode(customersByClient.get(client.id) ?? [], row.customer_name ?? row.client_name, "customer", row.invoice_number);
+      return code ? { ...row, relatie_code: code } : row;
     }
 
-    if (!best) {
-      console.log(`[export.relatie] inv=${row.invoice_number} supplier_name="${row.supplier_name}" client_id=${client.id} match=NONE  scored=${JSON.stringify(scores)}`);
-      return row;
-    }
-
-    console.log(`[export.relatie] inv=${row.invoice_number} supplier_name="${row.supplier_name}" matched="${best.supplier.name}" code=${best.supplier.relatie_code ?? "<null>"} score=${best.score}`);
-    return best.supplier.relatie_code ? { ...row, relatie_code: best.supplier.relatie_code } : row;
+    // inkoop: fuzzy-match supplier_name against the client's suppliers.
+    const code = fuzzyCode(suppliersByClient.get(client.id) ?? [], row.supplier_name, "supplier", row.invoice_number);
+    return code ? { ...row, relatie_code: code } : row;
   });
 }
 
@@ -224,7 +158,7 @@ async function runInlineExport(req: NextRequest, jobId: string, body: z.infer<ty
   if (body.type === "excel") {
     let query = supabaseAdmin
       .from("invoices")
-      .select("id,invoice_number,client_name,supplier_name,phone_number,date,total_amount,currency,file_url,created_at,status,raw_extraction,invoice_direction");
+      .select("id,invoice_number,client_name,supplier_name,customer_id,customer_name,phone_number,date,total_amount,currency,file_url,created_at,status,raw_extraction,invoice_direction");
     if (body.ids && body.ids.length > 0) {
       query = query.in("id", body.ids);
     } else {
