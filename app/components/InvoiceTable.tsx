@@ -2,7 +2,6 @@
 
 import { Icon, I } from "./Icon";
 import { Pill, TypePill, statusTone, statusLabel } from "./Pill";
-import { ConfidenceBar } from "./ConfidenceBar";
 
 // Avatar color comes from the invoice direction (inkoop = warm reds,
 // verkoop = greens). The hash of the name selects a shade within that
@@ -155,7 +154,6 @@ export function InvoiceTable({
         <div style={{ textAlign: "right" }}>
           <SortHead k="amount" sort={sort} setSort={setSort} align="right">Amount</SortHead>
         </div>
-        <div>Confidence</div>
         <div>Type</div>
         <div>Status</div>
         <div style={{ textAlign: "center" }}>Exported?</div>
@@ -170,7 +168,6 @@ export function InvoiceTable({
       ) : (
         rows.map((row) => {
           const sel = selected.has(row.id);
-          const pct = row.confidence != null ? Math.min(100, Math.round(row.confidence * 100)) : 0;
           const type = row.invoice_direction === "verkoop" ? "Verkoop" : "Inkoop";
           // Display: sender (from clients table by phone match) is primary,
           // the extracted company name on the invoice goes underneath.
@@ -215,7 +212,6 @@ export function InvoiceTable({
               <div className="cell-phone">{row.phone_number}</div>
               <div className="cell-date">{row.date ?? "—"}</div>
               <div className="cell-amount">{fmtEUR(row.total_amount)}</div>
-              <div><ConfidenceBar pct={pct} /></div>
               <div><TypePill type={type} /></div>
               <div><Pill tone={statusTone(row.status)}>{statusLabel(row.status)}</Pill></div>
 

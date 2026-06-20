@@ -30,8 +30,6 @@ function fmtEUR(n: number | null): string {
   return new Intl.NumberFormat("nl-NL", { style: "currency", currency: "EUR" }).format(n);
 }
 
-const ITEM_NAMES = ["Granen 25kg","Olijfolie 5L","Tomatenpuree","Speltbloem","Linzen","Couscous","Verpakking"];
-
 interface InvoiceDrawerProps {
   row: InvoiceRow | null;
   onClose: () => void;
@@ -59,10 +57,7 @@ export function InvoiceDrawer({ row, onClose }: InvoiceDrawerProps) {
   const color = clientColor(row?.client_name ?? null);
   const initials = clientInitials(row?.client_name ?? null);
   const type = row?.invoice_direction === "verkoop" ? "Verkoop" : "Inkoop";
-  const pct = row?.confidence != null ? Math.min(100, Math.round(row.confidence * 100)) : 0;
-
-  const lineCount = 3;
-  const lineAmount = row ? (row.total_amount ?? 0) / lineCount : 0;
+  const exportCount = row?.export_count ?? 0;
 
   return (
     <>
@@ -111,62 +106,31 @@ export function InvoiceDrawer({ row, onClose }: InvoiceDrawerProps) {
                 </span>
               </div>
 
-              <div className="preview">
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
-                  <div>
-                    <div style={{ fontWeight: 600, color: "var(--ink)" }}>{row.client_name || "Unknown"}</div>
-                    <div>{row.phone_number}</div>
-                    <div>BTW NL {row.invoice_number?.padStart(9, "0") ?? "—"}B01</div>
-                  </div>
-                  <div style={{ textAlign: "right" }}>
-                    <div style={{ fontWeight: 600, color: "var(--ink)" }}>
-                      {row.invoice_number ? `INV-${row.invoice_number}` : "—"}
-                    </div>
-                    <div>{row.date ?? "—"}</div>
-                    <div>Page 1 / 1</div>
-                  </div>
-                </div>
-                <div style={{ borderTop: "1px dashed var(--line)", paddingTop: 12, color: "var(--faint)" }}>
-                  ⌐ extracted via Oranji OCR · confidence {pct}%
-                </div>
+              <div>
+                <div className="section-label">Details</div>
+                <dl className="kv">
+                  <dt>Invoice #</dt>
+                  <dd>{row.invoice_number || "—"}</dd>
+                  <dt>Date</dt>
+                  <dd>{row.date ?? "—"}</dd>
+                  <dt>Sender</dt>
+                  <dd>{row.sender_name || "—"}</dd>
+                  <dt>Company</dt>
+                  <dd>{row.client_name || "—"}</dd>
+                  <dt>Phone</dt>
+                  <dd>{row.phone_number || "—"}</dd>
+                  <dt>Type</dt>
+                  <dd>{type}</dd>
+                  <dt>Currency</dt>
+                  <dd>{row.currency}</dd>
+                  <dt>Exported</dt>
+                  <dd>{exportCount > 0 ? `${exportCount}×` : "Not yet"}</dd>
+                </dl>
               </div>
 
               <div>
                 <div className="section-label">Line items</div>
-                <table className="li-tbl">
-                  <thead>
-                    <tr>
-                      <th>SKU</th>
-                      <th>Description</th>
-                      <th className="r" style={{ textAlign: "right" }}>Qty</th>
-                      <th className="r" style={{ textAlign: "right" }}>Total</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {Array.from({ length: lineCount }).map((_, i) => (
-                      <tr key={i}>
-                        <td>{`SKU-${1100 + i * 7}`}</td>
-                        <td style={{ fontFamily: "var(--sans)" }}>{ITEM_NAMES[i % ITEM_NAMES.length]}</td>
-                        <td className="r">{1 + (i % 4)}</td>
-                        <td className="r">{fmtEUR(+lineAmount.toFixed(2))}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              <div>
-                <div className="section-label">Metadata</div>
-                <dl className="kv">
-                  <dt>File</dt>
-                  <dd>{row.invoice_number ? `INV-${row.invoice_number}.pdf` : row.id}</dd>
-                  <dt>Phone</dt>
-                  <dd>{row.phone_number}</dd>
-                  <dt>Confidence</dt>
-                  <dd>{pct}%</dd>
-                  <dt>Currency</dt>
-                  <dd>{row.currency}</dd>
-                </dl>
+                <div className="dr-empty">No line items extracted for this invoice.</div>
               </div>
             </div>
 

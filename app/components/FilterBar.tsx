@@ -17,8 +17,6 @@ const QUICK_CHIPS = [
   { k: "today",    label: "Today" },
   { k: "month",    label: "This month" },
   { k: "3months",  label: "3 months" },
-  { k: "pending",  label: "Pending review" },
-  { k: "high",     label: "Above €500" },
 ];
 
 // Local-date ISO (YYYY-MM-DD). Avoid toISOString(), which converts to UTC and
@@ -36,8 +34,8 @@ function openPicker(e: React.MouseEvent<HTMLInputElement> | React.FocusEvent<HTM
   try { el.showPicker?.(); } catch { /* not user-activated — ignore */ }
 }
 
-// Compute from/to dates for a given quick chip. Returns null when the chip
-// is not a date-range one (e.g. pending / high) — those just toggle UI state.
+// Compute from/to dates for a given quick chip. Returns null for any chip that
+// isn't a date-range one — those would just toggle UI state without setting dates.
 function quickDateRange(k: string): { from: string; to: string } | null {
   const today = new Date();
   const todayISO = toISODate(today);

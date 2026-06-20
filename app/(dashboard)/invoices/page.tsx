@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Icon, I } from "@/app/components/Icon";
-import { StatsRow } from "@/app/components/StatsRow";
 import { FilterBar, type FilterQuery, type AppliedChip } from "@/app/components/FilterBar";
 import { InvoiceTable, type InvoiceRow, type Sort } from "@/app/components/InvoiceTable";
 import { BulkBar } from "@/app/components/BulkBar";
@@ -29,8 +28,6 @@ const emptyPage: InvoicePage = {
 const emptyQ: FilterQuery = {
   phone: "", client: "", invoice: "", from: "", to: "", type: "Alle",
 };
-
-type TabId = "invoices" | "files" | "review";
 
 async function apiJson<T>(url: string): Promise<T> {
   const res = await fetch(url);
@@ -72,7 +69,6 @@ function filtersForExport(q: FilterQuery) {
 export default function InvoicesPage() {
   const { toast } = useToast();
 
-  const [tab, setTab]                 = useState<TabId>("invoices");
   const [q, setQ]                     = useState<FilterQuery>(emptyQ);
   const [committed, setCommitted]     = useState<FilterQuery>(emptyQ);
   const [quickOn, setQuickOn]         = useState("");
@@ -173,19 +169,6 @@ export default function InvoicesPage() {
     setExportOpen(true);
   }
 
-  const pendingCount = invoices.data.filter(
-    (r) => r.status !== "extracted" && r.status !== "done"
-  ).length;
-
-  const reviewCount = pendingCount;
-
-  const avgConf = invoices.data.length > 0
-    ? Math.round(
-        invoices.data.reduce((s, r) => s + (r.confidence != null ? r.confidence * 100 : 0), 0)
-        / invoices.data.length
-      )
-    : 0;
-
   return (
     <main className="main">
       {/* Page header */}
@@ -221,14 +204,6 @@ export default function InvoicesPage() {
         </div>
       )}
 
-      {/* Stats */}
-      <StatsRow
-        total={invoices.total}
-        totalAmount={invoices.total_amount}
-        pending={pendingCount}
-        avgConfidence={avgConf}
-      />
-
       {/* Filters */}
       <FilterBar
         q={q}
@@ -240,38 +215,6 @@ export default function InvoicesPage() {
         onSearch={applySearch}
         onClear={clearAll}
       />
-
-      {/* Tabs */}
-      <div className="tabs-row" role="tablist" aria-label="Invoice views">
-        <button
-          className={`tab${tab === "invoices" ? " on" : ""}`}
-          role="tab"
-          aria-selected={tab === "invoices"}
-          onClick={() => setTab("invoices")}
-        >
-          <Icon d={I.invoice} size={14} />
-          Invoices
-          <span className="tab-ct">{invoices.total}</span>
-        </button>
-        <button
-          className={`tab${tab === "review" ? " on" : ""}`}
-          role="tab"
-          aria-selected={tab === "review"}
-          onClick={() => setTab("review")}
-        >
-          <Icon d={I.alert} size={14} />
-          Needs review
-          <span className="tab-ct">{reviewCount}</span>
-        </button>
-        <div className="tabs-right">
-          <button className="btn sm">
-            <Icon d={I.filter} size={12} /> Columns
-          </button>
-          <button className="btn sm" onClick={() => openExport("excel")}>
-            <Icon d={I.download} size={12} /> Export view
-          </button>
-        </div>
-      </div>
 
       <InvoiceTable
         rows={invoices.data}
