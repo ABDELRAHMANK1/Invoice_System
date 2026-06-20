@@ -2,43 +2,29 @@ import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { StatsRow } from "@/app/components/StatsRow";
 
+const cards = [
+  { label: "Total invoices", value: "12", sub: "across your workspace", accent: "#0ea5e9" },
+  { label: "Total value", value: "€ 1.234,50", sub: "sum of invoice totals", accent: "#10b981" },
+];
+
 describe("StatsRow", () => {
-  it("renders all four stat labels", () => {
-    render(<StatsRow total={12} totalAmount={1234.5} pending={3} avgConfidence={92} />);
-    expect(screen.getByText("Invoices this month")).toBeInTheDocument();
-    expect(screen.getByText("Value this month")).toBeInTheDocument();
-    expect(screen.getByText("Pending review")).toBeInTheDocument();
-    expect(screen.getByText("Avg. confidence")).toBeInTheDocument();
-  });
-
-  it("renders the integer count values exactly", () => {
-    render(<StatsRow total={12} totalAmount={1234.5} pending={3} avgConfidence={92} />);
+  it("renders a card per entry with its label, value and subtitle", () => {
+    render(<StatsRow cards={cards} />);
+    expect(screen.getByText("Total invoices")).toBeInTheDocument();
     expect(screen.getByText("12")).toBeInTheDocument();
-    expect(screen.getByText("3")).toBeInTheDocument();
-    expect(screen.getByText("92%")).toBeInTheDocument();
+    expect(screen.getByText("across your workspace")).toBeInTheDocument();
+    expect(screen.getByText("Total value")).toBeInTheDocument();
+    expect(screen.getByText("sum of invoice totals")).toBeInTheDocument();
   });
 
-  it("formats amount as Dutch EUR currency", () => {
-    const { container } = render(
-      <StatsRow total={1} totalAmount={1234.5} pending={0} avgConfidence={0} />
-    );
-    // nl-NL formatting produces "€ 1.234,50" (with non-breaking space).
-    // We check for the presence of "1.234,50" which is locale-stable.
-    expect(container.textContent).toMatch(/1\.234,50/);
+  it("renders one accent bar per card", () => {
+    const { container } = render(<StatsRow cards={cards} />);
+    expect(container.querySelectorAll(".stat-bar")).toHaveLength(cards.length);
   });
 
-  it("renders the colored accent bar on each card", () => {
-    const { container } = render(
-      <StatsRow total={1} totalAmount={1} pending={0} avgConfidence={0} />
-    );
-    expect(container.querySelectorAll(".stat-bar")).toHaveLength(4);
-  });
-
-  it("renders supporting subtitle text under each value", () => {
-    render(<StatsRow total={5} totalAmount={100} pending={2} avgConfidence={88} />);
-    expect(screen.getByText("of 5 total")).toBeInTheDocument();
-    expect(screen.getByText("net total")).toBeInTheDocument();
-    expect(screen.getByText("needs your attention")).toBeInTheDocument();
-    expect(screen.getByText("across 5 invoices")).toBeInTheDocument();
+  it("renders no confidence or pending-review widgets", () => {
+    render(<StatsRow cards={cards} />);
+    expect(screen.queryByText(/confidence/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/pending review/i)).not.toBeInTheDocument();
   });
 });

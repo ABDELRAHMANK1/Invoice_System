@@ -11,8 +11,8 @@ const NAV_ITEMS: Array<{
   match?: (pathname: string) => boolean;
   count?: number | null;
 }> = [
-  // Dashboard temporarily points at /invoices until a dedicated dashboard page exists.
-  // Marked active only on the exact root.
+  // Dashboard is the workspace overview at the root; marked active only on the
+  // exact root so it doesn't light up for every nested route.
   { href: "/",          d: I.home,    label: "Dashboard", match: (p) => p === "/" },
   { href: "/invoices",  d: I.invoice, label: "Invoices" },
   { href: "/files",     d: I.folder,  label: "Files" },

@@ -1,8 +1,6 @@
-function fmtEUR(n: number) {
-  return new Intl.NumberFormat("nl-NL", { style: "currency", currency: "EUR" }).format(n);
-}
+import type { CSSProperties } from "react";
 
-interface StatCardProps {
+export interface StatCardProps {
   label:  string;
   value:  string;
   sub?:   string;
@@ -17,46 +15,18 @@ function StatCard({ label, value, sub, accent }: StatCardProps) {
       {sub && <div className="stat-sub">{sub}</div>}
       <span
         className="stat-bar"
-        style={{ ["--stat-accent" as string]: accent } as React.CSSProperties}
+        style={{ ["--stat-accent" as string]: accent } as CSSProperties}
       />
     </div>
   );
 }
 
-interface StatsRowProps {
-  total:         number;
-  totalAmount:   number;
-  pending:       number;
-  avgConfidence: number;
-}
-
-export function StatsRow({ total, totalAmount, pending, avgConfidence }: StatsRowProps) {
+export function StatsRow({ cards }: { cards: StatCardProps[] }) {
   return (
     <div className="stats">
-      <StatCard
-        label="Invoices this month"
-        value={String(total)}
-        sub={`of ${total} total`}
-        accent="#0ea5e9"
-      />
-      <StatCard
-        label="Value this month"
-        value={fmtEUR(totalAmount)}
-        sub="net total"
-        accent="#10b981"
-      />
-      <StatCard
-        label="Pending review"
-        value={String(pending)}
-        sub="needs your attention"
-        accent="#f59e0b"
-      />
-      <StatCard
-        label="Avg. confidence"
-        value={`${avgConfidence}%`}
-        sub={total > 0 ? `across ${total} invoices` : ""}
-        accent="#6366f1"
-      />
+      {cards.map((c) => (
+        <StatCard key={c.label} {...c} />
+      ))}
     </div>
   );
 }
