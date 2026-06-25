@@ -231,7 +231,7 @@ a.nav-item { text-decoration: none; display: flex; }
 /* ── Modal ── */
 .modal-backdrop { position: fixed; inset: 0; z-index: 200; background: rgba(11,31,58,.25); display: flex; align-items: center; justify-content: center; padding: 16px; backdrop-filter: blur(2px); }
 .modal { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: 0 20px 60px rgba(11,31,58,.18); width: min(480px, 100%); display: flex; flex-direction: column; overflow: hidden; }
-.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px; border-bottom: 1px solid var(--line); gap: 12px; }
+.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px; border-bottom: 1px solid var(--line); gap: 12px; flex-shrink: 0; }
 .modal-title { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: var(--ink); }
 .modal-sub { margin: 0; padding: 14px 18px 0; font-size: 13px; color: var(--muted); }
 .modal-choices { display: flex; gap: 10px; padding: 16px 18px; }
@@ -241,7 +241,17 @@ a.nav-item { text-decoration: none; display: flex; }
 .modal-choice-desc { font-size: 11px; color: var(--muted); text-align: center; }
 .modal-error { display: flex; align-items: center; gap: 6px; margin: 0 18px; padding: 10px 12px; border-radius: var(--r-sm); background: var(--danger-soft); color: var(--danger); font-size: 12.5px; }
 .modal-success { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 36px 18px; color: var(--good); font-size: 14px; font-weight: 500; }
-.modal-foot { display: flex; gap: 8px; justify-content: flex-end; padding: 14px 18px; border-top: 1px solid var(--line); }
+.modal-foot { display: flex; gap: 8px; justify-content: flex-end; padding: 14px 18px; border-top: 1px solid var(--line); flex-shrink: 0; }
+
+/* New-invoice modal: cap the dialog at 90vh and let only the line-items list
+   scroll, so the pinned fields above (.ni-fixed) and the footer stay in view.
+   Each region carries a divider + gutter so the sections read as distinct. */
+.ni-fixed { flex-shrink: 0; display: flex; flex-direction: column; gap: 14px; padding: 16px 18px; border-bottom: 1px solid var(--line); }
+.ni-items { flex: 1 1 auto; min-height: 0; padding: 16px 18px; }
+.ni-items-box { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.ni-items-head { flex-shrink: 0; }
+.ni-items-rows { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.ni-totals { flex-shrink: 0; padding: 16px 18px; border-top: 1px solid var(--line); }
 
 /* ── Spinner ── */
 .spinner-sm { display: inline-block; width: 12px; height: 12px; border: 1.5px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: spin .65s linear infinite; flex-shrink: 0; }
