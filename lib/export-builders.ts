@@ -26,7 +26,21 @@ export interface InvoiceExportRow {
   invoice_direction?: "inkoop" | "verkoop" | null;
   /** RelatieCode resolved from the matching supplier (inkoop) or client (verkoop). Falls back to bookingId when null. */
   relatie_code?: string | null;
+  /** Explicit verkoop split — used by the raw-file converter to feed real
+   *  excl (net) + btw amounts straight through, so anomalous rates that don't
+   *  snap to 0/9/21 keep their real numbers instead of being recomputed from a
+   *  bucketed rate. When absent, the verkoop sheet derives net/btw from
+   *  vat_rate + total_amount as before. `draft` = a single zero-amount
+   *  Debiteuren line (Concept invoices). */
+  verkoop_amounts?: { net: number; btw: number; variant: VerkoopVariant } | null;
+  /** When set AND the builder is called with `flagReviewRows`, this invoice's
+   *  rows are highlighted and the note is attached as a cell comment (used to
+   *  flag unmatched Relatiecodes / anomalous VAT for manual review). */
+  review_note?: string | null;
 }
+
+/** Verkoop booking shape: which omzet/BTW accounts a row set uses. */
+export type VerkoopVariant = "hoog" | "laag" | "vrij" | "draft";
 
 // ── Dev helpers ───────────────────────────────────────────────────────────────
 
@@ -70,42 +84,78 @@ function round2(n: number) {
   return Math.round(n * 100) / 100;
 }
 
-// ── Native Snelstart INKOOP sheet — 24 columns, 6 rows per invoice ──────────
+// ── Snelstart "Boekingen" import schema — the ONE accepted 22-column layout ──
 //
+// These are the exact column names (case-sensitive, no spaces/hyphens) that
+// Snelstart's "Bestand uploaden" importer requires — verified against the real
+// accepted template (`Boekingen (1)-.xlsx`, sheet with 22 cols). BOTH the
+// verkoop and inkoop sheets use this identical schema; the importer rejected
+// earlier files for missing `bookingid`/`dagboeknummer`/`btwsoort` because the
+// old headers were hyphenated / renamed.
+//
+// Columns intentionally left blank for a fresh import (matching the template's
+// own example rows): JournaalPostId, BtwPercentage (the rate is carried by
+// BtwSoort), FactuurNummerId, KostenplaatsOmschrijving, KostenplaatsNummer.
+// Betalingstermijn is 0 on verkoop rows, blank on inkoop (per the template).
+//
+// INKOOP booking — 6 rows per invoice (Regel 5 → 0):
 //   Regel 5: 1679 Btw te vorderen laag (inkopen)  Debet=vat_9
 //   Regel 4: 1680 Btw te vorderen hoog (inkopen)  Debet=vat_21
 //   Regel 3: 7001 Inkopen laag tarief             Debet=net_9
-//   Regel 2: 3090 Emballage                       Debet=emballage   (TODO: net_0 unmapped — Ammar to specify a 0% grootboek)
+//   Regel 2: 3090 Emballage                       Debet=emballage
 //   Regel 1: 7002 Inkopen hoog tarief             Debet=net_21
-//   Regel 0: 1600 Crediteuren                     Credit=total_amount
+//   Regel 0: 1300 Crediteuren (GrootboekNummer)   Credit=total_amount
+//            (DagboekNummer stays 1600 — the Crediteuren dagboek.)
 
-const INKOOP_COLS: { header: string; key: string; width: number }[] = [
-  { header: "BookingId",                 key: "bookingId",                 width: 11 },
-  { header: "Dagboeknaam",               key: "dagboeknaam",               width: 14 },
-  { header: "Datum",                     key: "datum",                     width: 12 },
-  { header: "Regel",                     key: "regel",                     width: 7 },
-  { header: "Omschrijving",              key: "omschrijving",              width: 32 },
-  { header: "GrootboekNummer",           key: "grootboek",                 width: 14 },
-  { header: "Grootboeknaam",             key: "grootboeknaam",             width: 32 },
-  { header: "Debet",                     key: "debet",                     width: 11 },
-  { header: "Credit",                    key: "credit",                    width: 11 },
-  { header: "Saldo",                     key: "saldo",                     width: 11 },
-  { header: "BtwSoort",                  key: "btwSoort",                  width: 10 },
-  { header: "Factuurnummer",             key: "factuurnummer",             width: 18 },
-  { header: "DagboekNummer",             key: "dagboek",                   width: 10 },
-  { header: "Dagboeksoort",              key: "dagboeksoort",              width: 18 },
-  { header: "Boekstuk",                  key: "boekstuk",                  width: 10 },
-  { header: "Gewijzigd door accountant", key: "gewijzigdDoorAccountant",   width: 26 },
-  { header: "Relatiecode",               key: "relatiecode",               width: 12 },
-  { header: "Relatienaam",               key: "relatienaam",               width: 28 },
-  { header: "Grootboekrekening type",    key: "grootboekrekeningType",     width: 22 },
-  { header: "Grootboek functie",         key: "grootboekFunctie",          width: 22 },
-  { header: "Gemarkeerd",                key: "gemarkeerd",                width: 12 },
-  { header: "Bijlagen",                  key: "bijlagen",                  width: 10 },
-  { header: "Kostenplaats",              key: "kostenplaats",              width: 12 },
-  { header: "Kostenplaatsnaam",          key: "kostenplaatsnaam",          width: 20 },
-  { header: "Bankomschrijving",          key: "bankomschrijving",          width: 22 },
+const SNELSTART_COLS: { header: string; key: string; width: number }[] = [
+  { header: "JournaalPostId",           key: "journaalPostId",           width: 14 },
+  { header: "BookingId",                key: "bookingId",                width: 11 },
+  { header: "Betalingstermijn",         key: "betalingstermijn",         width: 16 },
+  { header: "Datum",                    key: "datum",                    width: 12 },
+  { header: "DagboekSoort",             key: "dagboeksoort",             width: 18 },
+  { header: "DagboekNaam",              key: "dagboeknaam",              width: 14 },
+  { header: "DagboekNummer",            key: "dagboeknummer",            width: 14 },
+  { header: "Omschrijving",             key: "omschrijving",             width: 32 },
+  { header: "Regel",                    key: "regel",                    width: 7 },
+  { header: "Debet",                    key: "debet",                    width: 11 },
+  { header: "Credit",                   key: "credit",                   width: 11 },
+  { header: "GrootboekNaam",            key: "grootboeknaam",            width: 32 },
+  { header: "GrootboekNummer",          key: "grootboeknummer",          width: 14 },
+  { header: "BtwSoort",                 key: "btwSoort",                 width: 10 },
+  { header: "BtwPercentage",            key: "btwPercentage",            width: 14 },
+  { header: "Boekstuk",                 key: "boekstuk",                 width: 10 },
+  { header: "FactuurNummerId",          key: "factuurNummerId",          width: 16 },
+  { header: "FactuurNummer",            key: "factuurnummer",            width: 18 },
+  { header: "KostenplaatsOmschrijving", key: "kostenplaatsOmschrijving", width: 22 },
+  { header: "KostenplaatsNummer",       key: "kostenplaatsNummer",       width: 18 },
+  { header: "RelatieNaam",              key: "relatienaam",              width: 28 },
+  { header: "RelatieCode",              key: "relatiecode",              width: 12 },
 ];
+
+// Both sheets share the single accepted schema. Kept as named aliases so the
+// two write functions read intention-clearly and future divergence is a
+// one-line change, not a re-thread.
+const INKOOP_COLS = SNELSTART_COLS;
+const VERKOOP_COLS = SNELSTART_COLS;
+
+// 1-based column indices used for number/date formatting (see SNELSTART_COLS).
+const COL_DATUM = 4;
+const COL_DEBET = 10;
+const COL_CREDIT = 11;
+const COL_RELATIECODE = 22;
+
+// Light amber highlight for rows that need manual review (blank Relatiecode /
+// anomalous VAT). Opt-in via BuildInvoiceExcelOptions.flagReviewRows.
+const REVIEW_FILL: ExcelJS.Fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFF3CD" } };
+
+/** Highlight an invoice's rows and pin a review note as a comment on its
+ *  RelatieCode cell. Fills all 22 columns so the whole band reads as flagged. */
+function applyReviewFlag(rows: ExcelJS.Row[], note: string) {
+  for (const row of rows) {
+    for (let c = 1; c <= SNELSTART_COLS.length; c += 1) row.getCell(c).fill = REVIEW_FILL;
+  }
+  if (rows[0]) rows[0].getCell(COL_RELATIECODE).note = note;
+}
 
 interface VatBreakdownLike {
   net_21: number;
@@ -164,7 +214,7 @@ function inkoopRowSpecs(bd: VatBreakdownLike, totalIncl: number): InkoopRowSpec[
     { regel: 3, grootboek: 7001, grootboeknaam: "Inkopen laag tarief",            debet: round2(bd.net_9),    credit: 0,                  btwSoort: 1, grootboekrekeningType: "Verlies & Winst", grootboekFunctie: "InkopenKostenLaag" },
     { regel: 2, grootboek: 3090, grootboeknaam: "Emballage",                      debet: round2(bd.emballage),credit: 0,                  btwSoort: 0, grootboekrekeningType: "Balans",          grootboekFunctie: "Diversen" },
     { regel: 1, grootboek: 7002, grootboeknaam: "Inkopen hoog tarief",            debet: round2(bd.net_21),   credit: 0,                  btwSoort: 2, grootboekrekeningType: "Verlies & Winst", grootboekFunctie: "InkopenKostenHoog" },
-    { regel: 0, grootboek: 1600, grootboeknaam: "Crediteuren",                    debet: 0,                   credit: round2(totalIncl),  btwSoort: 0, grootboekrekeningType: "Balans",          grootboekFunctie: "DagboekInkoop" },
+    { regel: 0, grootboek: 1300, grootboeknaam: "Crediteuren",                    debet: 0,                   credit: round2(totalIncl),  btwSoort: 0, grootboekrekeningType: "Balans",          grootboekFunctie: "DagboekInkoop" },
   ];
 }
 
@@ -193,35 +243,32 @@ function writeInkoopSheet(workbook: ExcelJS.Workbook, invoices: InvoiceExportRow
 
     inkoopRowSpecs(bd, totalIncl).forEach((spec) => {
       const row = sheet.addRow({
-        bookingId:               boekstuk,
-        dagboeknaam:             "Crediteuren",
-        datum:                   datum,
-        regel:                   spec.regel,
-        omschrijving:            party,
-        grootboek:               spec.grootboek,
-        grootboeknaam:           spec.grootboeknaam,
-        debet:                   spec.debet,
-        credit:                  spec.credit,
-        saldo:                   round2(spec.debet - spec.credit),
-        btwSoort:                spec.btwSoort,
-        factuurnummer:           inv.invoice_number,
-        dagboek:                 1600,
-        dagboeksoort:            "dagboek Inkoop",
-        boekstuk:                boekstuk,
-        gewijzigdDoorAccountant: false,
-        relatiecode:             relatieCode,
-        relatienaam:             party,
-        grootboekrekeningType:   spec.grootboekrekeningType,
-        grootboekFunctie:        spec.grootboekFunctie,
-        gemarkeerd:              false,
-        bijlagen:                true,
-        kostenplaats:            0,
-        kostenplaatsnaam:        null,
-        bankomschrijving:        null,
+        journaalPostId:           null,   // blank for a fresh import
+        bookingId:                boekstuk,
+        betalingstermijn:         null,   // inkoop: blank (template leaves it empty)
+        datum:                    datum,
+        dagboeksoort:             "dagboek Inkoop",
+        dagboeknaam:              "Crediteuren",
+        dagboeknummer:            1600,
+        omschrijving:             party,
+        regel:                    spec.regel,
+        debet:                    spec.debet,
+        credit:                   spec.credit,
+        grootboeknaam:            spec.grootboeknaam,
+        grootboeknummer:          spec.grootboek,
+        btwSoort:                 spec.btwSoort,
+        btwPercentage:            null,   // rate carried by BtwSoort; blank per template
+        boekstuk:                 boekstuk,
+        factuurNummerId:          null,
+        factuurnummer:            inv.invoice_number,
+        kostenplaatsOmschrijving: null,
+        kostenplaatsNummer:       null,
+        relatienaam:              party,
+        relatiecode:              relatieCode,
       });
 
-      if (datum) row.getCell(3).numFmt = "dd-mm-yyyy";
-      for (const numCol of [8, 9, 10]) row.getCell(numCol).numFmt = "#,##0.00";
+      if (datum) row.getCell(COL_DATUM).numFmt = "dd-mm-yyyy";
+      for (const numCol of [COL_DEBET, COL_CREDIT]) row.getCell(numCol).numFmt = "#,##0.00";
 
       row.eachCell({ includeEmpty: false }, (cell) => {
         cell.font = BASE_FONT;
@@ -231,39 +278,12 @@ function writeInkoopSheet(workbook: ExcelJS.Workbook, invoices: InvoiceExportRow
   });
 }
 
-// ── Native Snelstart VERKOOP sheet — 25 columns, 2 or 3 rows per invoice ────
+// ── Native Snelstart VERKOOP booking — 2 or 3 rows per invoice ──────────────
 //
 //   Regel 2: BTW af te dragen (1671 hoog / 1670 laag)  Credit=btw    (omitted at 0%)
 //   Regel 1: Omzet (8200 hoog / 8210 laag / 8170 verlegd)  Credit=net
 //   Regel 0: 1300 Debiteuren                              Debet=total_incl
-
-const VERKOOP_COLS: { header: string; key: string; width: number }[] = [
-  { header: "BookingId",                 key: "bookingId",                 width: 11 },
-  { header: "Dagboeknaam",               key: "dagboeknaam",               width: 14 },
-  { header: "Datum",                     key: "datum",                     width: 12 },
-  { header: "Regel",                     key: "regel",                     width: 7 },
-  { header: "Omschrijving",              key: "omschrijving",              width: 32 },
-  { header: "Grootboek",                 key: "grootboek",                 width: 10 },
-  { header: "Grootboeknaam",             key: "grootboeknaam",             width: 32 },
-  { header: "Debet",                     key: "debet",                     width: 11 },
-  { header: "Credit",                    key: "credit",                    width: 11 },
-  { header: "Saldo",                     key: "saldo",                     width: 11 },
-  { header: "Btw-soort",                 key: "btwSoort",                  width: 10 },
-  { header: "Factuurnummer",             key: "factuurnummer",             width: 18 },
-  { header: "Dagboek",                   key: "dagboek",                   width: 10 },
-  { header: "Dagboeksoort",              key: "dagboeksoort",              width: 18 },
-  { header: "Boekstuk",                  key: "boekstuk",                  width: 10 },
-  { header: "Gewijzigd door accountant", key: "gewijzigdDoorAccountant",   width: 26 },
-  { header: "Relatiecode",               key: "relatiecode",               width: 12 },
-  { header: "Relatienaam",               key: "relatienaam",               width: 28 },
-  { header: "Grootboekrekening type",    key: "grootboekrekeningType",     width: 22 },
-  { header: "Grootboek functie",         key: "grootboekFunctie",          width: 22 },
-  { header: "Gemarkeerd",                key: "gemarkeerd",                width: 12 },
-  { header: "Bijlagen",                  key: "bijlagen",                  width: 10 },
-  { header: "Bankomschrijving",          key: "bankomschrijving",          width: 22 },
-  { header: "Kostenplaats",              key: "kostenplaats",              width: 12 },
-  { header: "Kostenplaatsnaam",          key: "kostenplaatsnaam",          width: 20 },
-];
+// Emitted into the shared SNELSTART_COLS schema (see above).
 
 interface VerkoopRowSpec {
   regel: number;
@@ -278,7 +298,23 @@ interface VerkoopRowSpec {
   grootboekFunctie: string;
 }
 
-function verkoopRowSpecs(totalIncl: number, vatPct: 0 | 9 | 21): VerkoopRowSpec[] {
+export function verkoopVariantForRate(vatPct: 0 | 9 | 21): VerkoopVariant {
+  return vatPct === 21 ? "hoog" : vatPct === 9 ? "laag" : "vrij";
+}
+
+/**
+ * Build the 2–3 verkoop rows from EXPLICIT net + btw amounts and a variant.
+ * Shared by the DB-backed export (amounts derived from vat_rate, via
+ * `verkoopRowSpecsFromRate`) and the raw-file converter (amounts passed
+ * verbatim so anomalous rates keep their real numbers). `draft` emits a single
+ * zero-amount Debiteuren line (Concept invoices — no VAT split).
+ */
+export function verkoopRowSpecs(
+  totalIncl: number,
+  net: number,
+  btw: number,
+  variant: VerkoopVariant,
+): VerkoopRowSpec[] {
   const regel0: VerkoopRowSpec = {
     regel: 0,
     grootboek: 1300,
@@ -290,15 +326,18 @@ function verkoopRowSpecs(totalIncl: number, vatPct: 0 | 9 | 21): VerkoopRowSpec[
     grootboekFunctie: "DagboekVerkoop",
   };
 
+  // draft (Concept): a single zero-amount booking line, no omzet/BTW split.
+  if (variant === "draft") return [regel0];
+
   // 0% / verlegd: 2 rows only (no BTW row).
-  if (vatPct === 0) {
+  if (variant === "vrij") {
     return [
       {
         regel: 1,
         grootboek: 8170,
         grootboeknaam: "Omzet binnen EU diensten",
         debet: 0,
-        credit: round2(totalIncl),
+        credit: round2(net),
         btwSoort: 0,
         grootboekrekeningType: "Verlies & Winst",
         grootboekFunctie: "VerkopenOmzetVrijgesteld",
@@ -307,17 +346,14 @@ function verkoopRowSpecs(totalIncl: number, vatPct: 0 | 9 | 21): VerkoopRowSpec[
     ];
   }
 
-  const btw = round2((totalIncl / (1 + vatPct / 100)) * (vatPct / 100));
-  const net = round2(totalIncl - btw);
-
-  if (vatPct === 9) {
+  if (variant === "laag") {
     return [
       {
         regel: 2,
         grootboek: 1670,
         grootboeknaam: "Btw af te dragen laag (verkopen)",
         debet: 0,
-        credit: btw,
+        credit: round2(btw),
         btwSoort: 1,
         grootboekrekeningType: "Balans",
         grootboekFunctie: "BtwAfTeDragenLaag",
@@ -327,7 +363,7 @@ function verkoopRowSpecs(totalIncl: number, vatPct: 0 | 9 | 21): VerkoopRowSpec[
         grootboek: 8210,
         grootboeknaam: "Omzet laag (diensten)",
         debet: 0,
-        credit: net,
+        credit: round2(net),
         btwSoort: 1,
         grootboekrekeningType: "Verlies & Winst",
         grootboekFunctie: "VerkopenOmzetLaag",
@@ -336,14 +372,14 @@ function verkoopRowSpecs(totalIncl: number, vatPct: 0 | 9 | 21): VerkoopRowSpec[
     ];
   }
 
-  // 21% — default
+  // hoog (21%) — and the fallback bucket for a flagged anomalous rate.
   return [
     {
       regel: 2,
       grootboek: 1671,
       grootboeknaam: "Btw af te dragen hoog (verkopen)",
       debet: 0,
-      credit: btw,
+      credit: round2(btw),
       btwSoort: 2,
       grootboekrekeningType: "Balans",
       grootboekFunctie: "BtwAfTeDragenHoog",
@@ -353,7 +389,7 @@ function verkoopRowSpecs(totalIncl: number, vatPct: 0 | 9 | 21): VerkoopRowSpec[
       grootboek: 8200,
       grootboeknaam: "Omzet hoog (diensten)",
       debet: 0,
-      credit: net,
+      credit: round2(net),
       btwSoort: 2,
       grootboekrekeningType: "Verlies & Winst",
       grootboekFunctie: "VerkopenOmzetHoog",
@@ -362,7 +398,20 @@ function verkoopRowSpecs(totalIncl: number, vatPct: 0 | 9 | 21): VerkoopRowSpec[
   ];
 }
 
-function writeVerkoopSheet(workbook: ExcelJS.Workbook, invoices: InvoiceExportRow[], blankUnmatched = false) {
+/** DB-backed export path: derive net/btw from a snapped rate, then delegate. */
+function verkoopRowSpecsFromRate(totalIncl: number, vatPct: 0 | 9 | 21): VerkoopRowSpec[] {
+  if (vatPct === 0) return verkoopRowSpecs(totalIncl, totalIncl, 0, "vrij");
+  const btw = round2((totalIncl / (1 + vatPct / 100)) * (vatPct / 100));
+  const net = round2(totalIncl - btw);
+  return verkoopRowSpecs(totalIncl, net, btw, verkoopVariantForRate(vatPct));
+}
+
+function writeVerkoopSheet(
+  workbook: ExcelJS.Workbook,
+  invoices: InvoiceExportRow[],
+  blankUnmatched = false,
+  flagReview = false,
+) {
   const sheet = workbook.addWorksheet("Verkoop");
   sheet.columns = VERKOOP_COLS.map(({ header, key, width }) => ({ header, key, width }));
 
@@ -387,47 +436,57 @@ function writeVerkoopSheet(workbook: ExcelJS.Workbook, invoices: InvoiceExportRo
     const codeStr     = inv.relatie_code == null ? "" : String(inv.relatie_code).trim();
     const relatieCode = codeStr !== "" ? codeStr : (blankUnmatched ? null : boekstuk);
 
-    const rawExt = (inv.raw_extraction as Record<string, unknown>) ?? {};
-    const rawVat = Number(rawExt.vat_rate ?? rawExt.btw_percentage ?? 21);
-    const vatPct = ([0, 9, 21] as const).includes(rawVat as 0 | 9 | 21) ? (rawVat as 0 | 9 | 21) : 21;
+    // Prefer explicit converter amounts (real excl/btw, incl. anomalous rates);
+    // otherwise derive net/btw from the snapped vat_rate as the DB path does.
+    let specs: VerkoopRowSpec[];
+    if (inv.verkoop_amounts) {
+      const { net, btw, variant } = inv.verkoop_amounts;
+      specs = verkoopRowSpecs(totalIncl, net, btw, variant);
+    } else {
+      const rawExt = (inv.raw_extraction as Record<string, unknown>) ?? {};
+      const rawVat = Number(rawExt.vat_rate ?? rawExt.btw_percentage ?? 21);
+      const vatPct = ([0, 9, 21] as const).includes(rawVat as 0 | 9 | 21) ? (rawVat as 0 | 9 | 21) : 21;
+      specs = verkoopRowSpecsFromRate(totalIncl, vatPct);
+    }
 
-    verkoopRowSpecs(totalIncl, vatPct).forEach((spec) => {
+    const invRows: ExcelJS.Row[] = [];
+    specs.forEach((spec) => {
       const row = sheet.addRow({
-        bookingId:               boekstuk,
-        dagboeknaam:             "Debiteuren",
-        datum:                   datum,
-        regel:                   spec.regel,
-        omschrijving:            party,
-        grootboek:               spec.grootboek,
-        grootboeknaam:           spec.grootboeknaam,
-        debet:                   spec.debet,
-        credit:                  spec.credit,
-        saldo:                   round2(spec.debet - spec.credit),
-        btwSoort:                spec.btwSoort,
-        factuurnummer:           inv.invoice_number,
-        dagboek:                 1300,
-        dagboeksoort:            "dagboek Verkoop",
-        boekstuk:                boekstuk,
-        gewijzigdDoorAccountant: false,
-        relatiecode:             relatieCode,
-        relatienaam:             party,
-        grootboekrekeningType:   spec.grootboekrekeningType,
-        grootboekFunctie:        spec.grootboekFunctie,
-        gemarkeerd:              false,
-        bijlagen:                true,
-        bankomschrijving:        null,
-        kostenplaats:            0,
-        kostenplaatsnaam:        null,
+        journaalPostId:           null,   // blank for a fresh import
+        bookingId:                boekstuk,
+        betalingstermijn:         0,      // verkoop rows: 0 (per accepted template)
+        datum:                    datum,
+        dagboeksoort:             "dagboek Verkoop",
+        dagboeknaam:              "Debiteuren",
+        dagboeknummer:            1300,
+        omschrijving:             party,
+        regel:                    spec.regel,
+        debet:                    spec.debet,
+        credit:                   spec.credit,
+        grootboeknaam:            spec.grootboeknaam,
+        grootboeknummer:          spec.grootboek,
+        btwSoort:                 spec.btwSoort,
+        btwPercentage:            null,   // rate carried by BtwSoort; blank per template
+        boekstuk:                 boekstuk,
+        factuurNummerId:          null,
+        factuurnummer:            inv.invoice_number,
+        kostenplaatsOmschrijving: null,
+        kostenplaatsNummer:       null,
+        relatienaam:              party,
+        relatiecode:              relatieCode,
       });
 
-      if (datum) row.getCell(3).numFmt = "dd-mm-yyyy";
-      for (const numCol of [8, 9, 10]) row.getCell(numCol).numFmt = "#,##0.00";
+      if (datum) row.getCell(COL_DATUM).numFmt = "dd-mm-yyyy";
+      for (const numCol of [COL_DEBET, COL_CREDIT]) row.getCell(numCol).numFmt = "#,##0.00";
 
       row.eachCell({ includeEmpty: false }, (cell) => {
         cell.font = BASE_FONT;
       });
-      row.commit();
+      invRows.push(row);
     });
+
+    if (flagReview && inv.review_note) applyReviewFlag(invRows, inv.review_note);
+    invRows.forEach((row) => row.commit());
   });
 }
 
@@ -437,6 +496,10 @@ export interface BuildInvoiceExcelOptions {
    *  (used by the one-off Snelstart converter so unmatched customers stay empty
    *  for manual fill-in). Default false → existing boekstuk fallback. */
   blankUnmatchedRelatiecode?: boolean;
+  /** When true, any invoice carrying a `review_note` has its rows highlighted
+   *  and the note attached as a cell comment (blank Relatiecode / anomalous VAT
+   *  in the raw-file converter). Default false. */
+  flagReviewRows?: boolean;
 }
 
 export async function buildInvoiceExcelBuffer(
@@ -447,11 +510,12 @@ export async function buildInvoiceExcelBuffer(
   workbook.creator = "Oranji";
   workbook.created = new Date();
   const blankUnmatched = options.blankUnmatchedRelatiecode ?? false;
+  const flagReview = options.flagReviewRows ?? false;
 
   const verkoopInvoices = invoices.filter((inv) => (inv.invoice_direction ?? "inkoop") === "verkoop");
   const inkoopInvoices  = invoices.filter((inv) => (inv.invoice_direction ?? "inkoop") !== "verkoop");
 
-  if (verkoopInvoices.length > 0) writeVerkoopSheet(workbook, verkoopInvoices, blankUnmatched);
+  if (verkoopInvoices.length > 0) writeVerkoopSheet(workbook, verkoopInvoices, blankUnmatched, flagReview);
   if (inkoopInvoices.length  > 0) writeInkoopSheet(workbook,  inkoopInvoices,  blankUnmatched);
 
   // Workbook must have at least one sheet.

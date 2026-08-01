@@ -23,8 +23,9 @@ End-to-end pieces:
 - **S3 (eu-north-1)** — invoice file storage + signed Excel export downloads.
 
 Languages: TypeScript (Next.js + tests), Python (FastAPI parser). Money flows
-in EUR. Verkoop = sales, inkoop = purchase — both have a 25-column native
-Snelstart Boekingen export sheet built by `lib/export-builders.ts`.
+in EUR. Verkoop = sales, inkoop = purchase — both are written into the single
+**22-column accepted Snelstart Boekingen import schema** (`SNELSTART_COLS` in
+`lib/export-builders.ts`), verified against Snelstart's real accepted template.
 
 ## 2. VPS
 
@@ -308,8 +309,32 @@ this is intentional, do not change it.
   npx playwright test    # e2e tests
   ```
 - Key files:
-  - `lib/export-builders.ts` — Snelstart Boekingen Excel builder
-    (verkoop + inkoop sheets, 25 cols each).
+  - `lib/export-builders.ts` — Snelstart Boekingen Excel builder. Both the
+    verkoop and inkoop sheets use one shared 22-column schema (`SNELSTART_COLS`)
+    that exactly matches Snelstart's accepted "Bestand uploaden" import template
+    (headers case-sensitive: `JournaalPostId, BookingId, Betalingstermijn, Datum,
+    DagboekSoort, DagboekNaam, DagboekNummer, Omschrijving, Regel, Debet, Credit,
+    GrootboekNaam, GrootboekNummer, BtwSoort, BtwPercentage, Boekstuk,
+    FactuurNummerId, FactuurNummer, KostenplaatsOmschrijving, KostenplaatsNummer,
+    RelatieNaam, RelatieCode`). `JournaalPostId`/`BtwPercentage`/`FactuurNummerId`/
+    `Kostenplaats*` are left blank per the template; `Betalingstermijn` = 0 on
+    verkoop rows. `verkoopRowSpecs(totalIncl, net, btw, variant)` builds the
+    verkoop rows from EXPLICIT amounts (variant `hoog|laag|vrij|draft`) so both
+    the DB export (`verkoopRowSpecsFromRate`) and the raw-file converter share
+    it. `buildInvoiceExcelBuffer` options: `blankUnmatchedRelatiecode`,
+    `flagReviewRows` (highlights rows with a `review_note` + pins it as a
+    RelatieCode cell comment).
+  - **Bulk Converter** (`/bulk-converter`) — converts an EXTERNAL raw invoice
+    xlsx (legacy export, not our `invoices` table) into the verkoop Boekingen
+    file. Core in `lib/raw-invoice-convert.ts` (`convertRawInvoiceSheet`, pure):
+    detects the header row + aliases columns (min: Factuurnummer, Datum, Client,
+    Bedrag excl/incl BTW); VAT from `incl − excl` snapped to {0,9,21}, else
+    anomalous → keeps real net/btw on the closest tarief and flags it; Status
+    `Concept` → zero-amount single-row `draft`; Relatiecode ONLY via fuzzy
+    customer-name match (`lib/relatie-match`), the source's own Klantnummer is
+    ignored. Route `app/api/bulk-converter/route.ts` (POST multipart file +
+    client_id; reads customers, writes nothing) builds with
+    `{ blankUnmatchedRelatiecode: true, flagReviewRows: true }`.
   - `lib/ai-extraction.ts` — OpenAI extraction prompt for AI fallback.
   - `app/api/export/route.ts` — Excel export endpoint. Resolves the Snelstart
     Relatiecode per invoice via `attachRelatieCodes`: phone → client, then
