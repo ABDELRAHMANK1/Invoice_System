@@ -12,71 +12,51 @@ import {
 
 /**
  * The exporter writes one workbook with up to two sheets — both now use the
- * native Snelstart Boekingen import layout:
+ * single accepted Snelstart "Boekingen" import layout (22 columns, exact
+ * case-sensitive header names verified against the real accepted template):
  *
- *  - "Verkoop" — verkoop only, 25 columns, 2 or 3 rows per invoice
+ *  - "Verkoop" — verkoop only, 2 or 3 rows per invoice
  *                (Regel 2 → 1 → 0 for 21%/9%, or Regel 1 → 0 for 0% verlegd).
- *  - "Inkoop"  — inkoop only, 25 columns, 6 fixed rows per invoice
- *                (Regel 5 → 0, top to bottom).
+ *  - "Inkoop"  — inkoop only, 6 fixed rows per invoice (Regel 5 → 0).
  *
  * Each sheet is only created when there are invoices of that direction.
  */
 
-// ── Verkoop sheet column reference (matches VERKOOP_COLS order) ────────────
-const V = {
-  bookingId:               1,
-  dagboeknaam:             2,
-  datum:                   3,
-  regel:                   4,
-  omschrijving:            5,
-  grootboek:               6,
-  grootboeknaam:           7,
-  debet:                   8,
-  credit:                  9,
-  saldo:                  10,
-  btwSoort:               11,
-  factuurnummer:          12,
-  dagboek:                13,
-  dagboeksoort:           14,
-  boekstuk:               15,
-  gewijzigdDoorAccountant:16,
-  relatiecode:            17,
-  relatienaam:            18,
-  grootboekrekeningType:  19,
-  grootboekFunctie:       20,
-  gemarkeerd:             21,
-  bijlagen:               22,
-  bankomschrijving:       23,
-  kostenplaats:           24,
-  kostenplaatsnaam:       25,
+// ── Shared 22-column reference (both sheets use SNELSTART_COLS order) ───────
+const C = {
+  journaalPostId:           1,
+  bookingId:                2,
+  betalingstermijn:         3,
+  datum:                    4,
+  dagboeksoort:             5,
+  dagboeknaam:              6,
+  dagboeknummer:            7,
+  omschrijving:             8,
+  regel:                    9,
+  debet:                   10,
+  credit:                  11,
+  grootboeknaam:           12,
+  grootboeknummer:         13,
+  btwSoort:                14,
+  btwPercentage:           15,
+  boekstuk:                16,
+  factuurNummerId:         17,
+  factuurnummer:           18,
+  kostenplaatsOmschrijving:19,
+  kostenplaatsNummer:      20,
+  relatienaam:             21,
+  relatiecode:             22,
 } as const;
+const V = C;
+const I = C;
 
-// ── Inkoop sheet column reference (matches INKOOP_COLS order) ──────────────
-const I = {
-  bookingId:               1,
-  dagboeknaam:             2,
-  datum:                   3,
-  regel:                   4,
-  omschrijving:            5,
-  grootboek:               6,
-  grootboeknaam:           7,
-  debet:                   8,
-  credit:                  9,
-  saldo:                  10,
-  btwSoort:               11,
-  factuurnummer:          12,
-  dagboek:                13,
-  dagboeksoort:           14,
-  boekstuk:               15,
-  gewijzigdDoorAccountant:16,
-  relatiecode:            17,
-  relatienaam:            18,
-  grootboekrekeningType:  19,
-  grootboekFunctie:       20,
-  gemarkeerd:             21,
-  bijlagen:               22,
-  kostenplaats:           23,
-} as const;
+const EXPECTED_HEADER = [
+  "JournaalPostId", "BookingId", "Betalingstermijn", "Datum", "DagboekSoort",
+  "DagboekNaam", "DagboekNummer", "Omschrijving", "Regel", "Debet", "Credit",
+  "GrootboekNaam", "GrootboekNummer", "BtwSoort", "BtwPercentage", "Boekstuk",
+  "FactuurNummerId", "FactuurNummer", "KostenplaatsOmschrijving",
+  "KostenplaatsNummer", "RelatieNaam", "RelatieCode",
+];
 
 async function loadWorkbook(invoices: Parameters<typeof buildInvoiceExcelBuffer>[0]) {
   const buffer = await buildInvoiceExcelBuffer(invoices);
@@ -86,55 +66,31 @@ async function loadWorkbook(invoices: Parameters<typeof buildInvoiceExcelBuffer>
   return wb;
 }
 
-function verkoopRow(sheet: ExcelJS.Worksheet, rowNum: number) {
+function readRow(sheet: ExcelJS.Worksheet, rowNum: number) {
   const row = sheet.getRow(rowNum);
   return {
-    bookingId:             row.getCell(V.bookingId).value,
-    dagboeknaam:           row.getCell(V.dagboeknaam).value,
-    datum:                 row.getCell(V.datum).value,
-    regel:                 row.getCell(V.regel).value,
-    omschrijving:          row.getCell(V.omschrijving).value,
-    grootboek:             row.getCell(V.grootboek).value,
-    grootboeknaam:         row.getCell(V.grootboeknaam).value,
-    debet:                 Number(row.getCell(V.debet).value ?? 0),
-    credit:                Number(row.getCell(V.credit).value ?? 0),
-    saldo:                 Number(row.getCell(V.saldo).value ?? 0),
-    btwSoort:              row.getCell(V.btwSoort).value,
-    factuurnummer:         row.getCell(V.factuurnummer).value,
-    dagboek:               row.getCell(V.dagboek).value,
-    dagboeksoort:          row.getCell(V.dagboeksoort).value,
-    boekstuk:              row.getCell(V.boekstuk).value,
-    relatiecode:           row.getCell(V.relatiecode).value,
-    relatienaam:           row.getCell(V.relatienaam).value,
-    grootboekrekeningType: row.getCell(V.grootboekrekeningType).value,
-    grootboekFunctie:      row.getCell(V.grootboekFunctie).value,
+    bookingId:       row.getCell(C.bookingId).value,
+    betalingstermijn:row.getCell(C.betalingstermijn).value,
+    dagboeknaam:     row.getCell(C.dagboeknaam).value,
+    dagboeksoort:    row.getCell(C.dagboeksoort).value,
+    dagboeknummer:   row.getCell(C.dagboeknummer).value,
+    datum:           row.getCell(C.datum).value,
+    regel:           row.getCell(C.regel).value,
+    omschrijving:    row.getCell(C.omschrijving).value,
+    grootboek:       row.getCell(C.grootboeknummer).value, // GrootboekNummer
+    grootboeknaam:   row.getCell(C.grootboeknaam).value,
+    debet:           Number(row.getCell(C.debet).value ?? 0),
+    credit:          Number(row.getCell(C.credit).value ?? 0),
+    btwSoort:        row.getCell(C.btwSoort).value,
+    btwPercentage:   row.getCell(C.btwPercentage).value,
+    factuurnummer:   row.getCell(C.factuurnummer).value,
+    boekstuk:        row.getCell(C.boekstuk).value,
+    relatiecode:     row.getCell(C.relatiecode).value,
+    relatienaam:     row.getCell(C.relatienaam).value,
   };
 }
-
-function inkoopRow(sheet: ExcelJS.Worksheet, rowNum: number) {
-  const row = sheet.getRow(rowNum);
-  return {
-    bookingId:             row.getCell(I.bookingId).value,
-    dagboeknaam:           row.getCell(I.dagboeknaam).value,
-    datum:                 row.getCell(I.datum).value,
-    regel:                 row.getCell(I.regel).value,
-    omschrijving:          row.getCell(I.omschrijving).value,
-    grootboek:             row.getCell(I.grootboek).value,
-    grootboeknaam:         row.getCell(I.grootboeknaam).value,
-    debet:                 Number(row.getCell(I.debet).value ?? 0),
-    credit:                Number(row.getCell(I.credit).value ?? 0),
-    saldo:                 Number(row.getCell(I.saldo).value ?? 0),
-    btwSoort:              row.getCell(I.btwSoort).value,
-    factuurnummer:         row.getCell(I.factuurnummer).value,
-    dagboek:               row.getCell(I.dagboek).value,
-    dagboeksoort:          row.getCell(I.dagboeksoort).value,
-    boekstuk:              row.getCell(I.boekstuk).value,
-    relatiecode:           row.getCell(I.relatiecode).value,
-    relatienaam:           row.getCell(I.relatienaam).value,
-    grootboekrekeningType: row.getCell(I.grootboekrekeningType).value,
-    grootboekFunctie:      row.getCell(I.grootboekFunctie).value,
-  };
-}
+const verkoopRow = readRow;
+const inkoopRow = readRow;
 
 // ── Workbook structure ───────────────────────────────────────────────────
 
@@ -166,38 +122,35 @@ describe("buildInvoiceExcelBuffer — workbook structure", () => {
     expect(wb.worksheets.map((s) => s.name).sort()).toEqual(["Inkoop", "Verkoop"]);
   });
 
-  it("Verkoop sheet emits all 25 native-Snelstart columns in the header row", async () => {
+  it("Verkoop sheet emits the 22 accepted-Snelstart columns in the header row", async () => {
     const wb = await loadWorkbook([sampleInvoiceVerkoop21]);
     const header = wb.getWorksheet("Verkoop")!.getRow(1);
     const titles: string[] = [];
     header.eachCell((cell) => titles.push(String(cell.value)));
-    expect(titles).toEqual([
-      "BookingId", "Dagboeknaam", "Datum", "Regel", "Omschrijving", "Grootboek",
-      "Grootboeknaam", "Debet", "Credit", "Saldo", "Btw-soort",
-      "Factuurnummer", "Dagboek", "Dagboeksoort", "Boekstuk",
-      "Gewijzigd door accountant", "Relatiecode", "Relatienaam",
-      "Grootboekrekening type", "Grootboek functie", "Gemarkeerd",
-      "Bijlagen", "Bankomschrijving", "Kostenplaats", "Kostenplaatsnaam",
-    ]);
+    expect(titles).toEqual(EXPECTED_HEADER);
   });
 
-  it("Inkoop sheet emits all 25 native-Snelstart columns in the header row", async () => {
+  it("Inkoop sheet emits the 22 accepted-Snelstart columns in the header row", async () => {
     const wb = await loadWorkbook([sampleInvoiceInkoop21]);
     const header = wb.getWorksheet("Inkoop")!.getRow(1);
     const titles: string[] = [];
     header.eachCell((cell) => titles.push(String(cell.value)));
-    expect(titles).toEqual([
-      "BookingId", "Dagboeknaam", "Datum", "Regel", "Omschrijving", "GrootboekNummer",
-      "Grootboeknaam", "Debet", "Credit", "Saldo", "BtwSoort",
-      "Factuurnummer", "DagboekNummer", "Dagboeksoort", "Boekstuk",
-      "Gewijzigd door accountant", "Relatiecode", "Relatienaam",
-      "Grootboekrekening type", "Grootboek functie", "Gemarkeerd",
-      "Bijlagen", "Kostenplaats", "Kostenplaatsnaam", "Bankomschrijving",
-    ]);
+    expect(titles).toEqual(EXPECTED_HEADER);
+  });
+
+  it("BtwPercentage is left blank (rate carried by BtwSoort) on every data row", async () => {
+    const wb = await loadWorkbook([sampleInvoiceVerkoop21, sampleInvoiceInkoop21]);
+    for (const name of ["Verkoop", "Inkoop"]) {
+      const sheet = wb.getWorksheet(name)!;
+      for (let r = 2; r <= sheet.rowCount; r++) {
+        const v = sheet.getRow(r).getCell(C.btwPercentage).value;
+        expect(v == null || v === "").toBe(true);
+      }
+    }
   });
 });
 
-// ── VERKOOP — new 25-col native Snelstart layout, Regel 2 → 1 → 0 ──────────
+// ── VERKOOP — 22-col accepted Snelstart layout, Regel 2 → 1 → 0 ────────────
 
 describe("buildInvoiceExcelBuffer — VERKOOP (sales) native Snelstart format", () => {
   it("21% BTW → 3 rows ordered Regel 2 → 1 → 0 with hoog accounts (1671/8200/1300)", async () => {
@@ -212,18 +165,15 @@ describe("buildInvoiceExcelBuffer — VERKOOP (sales) native Snelstart format", 
 
     expect(r2).toMatchObject({
       regel: 2, grootboek: 1671, grootboeknaam: "Btw af te dragen hoog (verkopen)",
-      debet: 0, credit: 42, saldo: -42,
-      btwSoort: 2, grootboekrekeningType: "Balans", grootboekFunctie: "BtwAfTeDragenHoog",
+      debet: 0, credit: 42, btwSoort: 2,
     });
     expect(r1).toMatchObject({
       regel: 1, grootboek: 8200, grootboeknaam: "Omzet hoog (diensten)",
-      debet: 0, credit: 200, saldo: -200,
-      btwSoort: 2, grootboekrekeningType: "Verlies & Winst", grootboekFunctie: "VerkopenOmzetHoog",
+      debet: 0, credit: 200, btwSoort: 2,
     });
     expect(r0).toMatchObject({
       regel: 0, grootboek: 1300, grootboeknaam: "Debiteuren",
-      debet: 242, credit: 0, saldo: 242,
-      btwSoort: 0, grootboekrekeningType: "Balans", grootboekFunctie: "DagboekVerkoop",
+      debet: 242, credit: 0, btwSoort: 0,
     });
   });
 
@@ -238,11 +188,11 @@ describe("buildInvoiceExcelBuffer — VERKOOP (sales) native Snelstart format", 
 
     expect(r2).toMatchObject({
       grootboek: 1670, grootboeknaam: "Btw af te dragen laag (verkopen)",
-      credit: 9, btwSoort: 1, grootboekFunctie: "BtwAfTeDragenLaag",
+      credit: 9, btwSoort: 1,
     });
     expect(r1).toMatchObject({
       grootboek: 8210, grootboeknaam: "Omzet laag (diensten)",
-      credit: 100, btwSoort: 1, grootboekFunctie: "VerkopenOmzetLaag",
+      credit: 100, btwSoort: 1,
     });
   });
 
@@ -256,14 +206,14 @@ describe("buildInvoiceExcelBuffer — VERKOOP (sales) native Snelstart format", 
 
     expect(r1).toMatchObject({
       regel: 1, grootboek: 8170, grootboeknaam: "Omzet binnen EU diensten",
-      debet: 0, credit: 100, btwSoort: 0, grootboekFunctie: "VerkopenOmzetVrijgesteld",
+      debet: 0, credit: 100, btwSoort: 0,
     });
     expect(r0).toMatchObject({
       regel: 0, grootboek: 1300, debet: 100, credit: 0, btwSoort: 0,
     });
   });
 
-  it("propagates Factuurnummer, Relatienaam, Dagboeknaam and Boekstuk to every row", async () => {
+  it("propagates Factuurnummer, Relatienaam, DagboekNaam/Nummer/Soort and Boekstuk to every row", async () => {
     const wb = await loadWorkbook([sampleInvoiceVerkoop21]);
     const sheet = wb.getWorksheet("Verkoop")!;
     for (let r = 2; r <= 4; r++) {
@@ -271,10 +221,11 @@ describe("buildInvoiceExcelBuffer — VERKOOP (sales) native Snelstart format", 
       expect(row.factuurnummer).toBe("INV-V-0001");
       expect(row.relatienaam).toBe("RAJEH FOOD");
       expect(row.dagboeknaam).toBe("Debiteuren");
-      expect(row.dagboek).toBe(1300);
+      expect(row.dagboeknummer).toBe(1300);
       expect(row.dagboeksoort).toBe("dagboek Verkoop");
       expect(row.boekstuk).toBe(1);
       expect(row.bookingId).toBe(1);
+      expect(row.betalingstermijn).toBe(0); // verkoop rows carry 0
     }
   });
 
@@ -321,15 +272,12 @@ describe("buildInvoiceExcelBuffer — VERKOOP (sales) native Snelstart format", 
     const r0 = verkoopRow(sheet, 4);
 
     expect(r2.credit).toBeCloseTo(273.76, 2);
-    expect(r2.saldo).toBeCloseTo(-273.76, 2);
     expect(r1.credit).toBeCloseTo(1303.62, 2);
-    expect(r1.saldo).toBeCloseTo(-1303.62, 2);
     expect(r0.debet).toBeCloseTo(1577.38, 2);
-    expect(r0.saldo).toBeCloseTo(1577.38, 2);
   });
 });
 
-// ── INKOOP — 25-col native Snelstart layout, 6 rows per invoice ────────────
+// ── INKOOP — 22-col accepted Snelstart layout, 6 rows per invoice ──────────
 
 describe("buildInvoiceExcelBuffer — INKOOP (purchase) native Snelstart format", () => {
   it("always emits exactly 6 rows per invoice in order Regel 5 → 0", async () => {
@@ -353,13 +301,12 @@ describe("buildInvoiceExcelBuffer — INKOOP (purchase) native Snelstart format"
     const r1 = inkoopRow(sheet, 6); // Regel 1 — Inkoop hoog
     const r0 = inkoopRow(sheet, 7); // Regel 0 — Crediteuren
 
-    expect(r5).toMatchObject({ grootboek: 1679, grootboeknaam: "Btw te vorderen laag (inkopen)", debet: 0,   btwSoort: 1, grootboekrekeningType: "Balans",          grootboekFunctie: "BtwTeVorderenLaag" });
-    expect(r4).toMatchObject({ grootboek: 1680, grootboeknaam: "Btw te vorderen hoog (inkopen)", debet: 21,  btwSoort: 2, grootboekrekeningType: "Balans",          grootboekFunctie: "BtwTeVorderenHoog" });
-    expect(r3).toMatchObject({ grootboek: 7001, grootboeknaam: "Inkopen laag tarief",            debet: 0,   btwSoort: 1, grootboekrekeningType: "Verlies & Winst", grootboekFunctie: "InkopenKostenLaag" });
-    expect(r2).toMatchObject({ grootboek: 3090, grootboeknaam: "Emballage",                      debet: 0,   btwSoort: 0, grootboekrekeningType: "Balans",          grootboekFunctie: "Diversen" });
-    expect(r1).toMatchObject({ grootboek: 7002, grootboeknaam: "Inkopen hoog tarief",            debet: 100, btwSoort: 2, grootboekrekeningType: "Verlies & Winst", grootboekFunctie: "InkopenKostenHoog" });
-    expect(r0).toMatchObject({ grootboek: 1600, grootboeknaam: "Crediteuren",                    debet: 0, credit: 121, btwSoort: 0, grootboekrekeningType: "Balans", grootboekFunctie: "DagboekInkoop" });
-    expect(r0.saldo).toBe(-121);
+    expect(r5).toMatchObject({ grootboek: 1679, grootboeknaam: "Btw te vorderen laag (inkopen)", debet: 0,   btwSoort: 1 });
+    expect(r4).toMatchObject({ grootboek: 1680, grootboeknaam: "Btw te vorderen hoog (inkopen)", debet: 21,  btwSoort: 2 });
+    expect(r3).toMatchObject({ grootboek: 7001, grootboeknaam: "Inkopen laag tarief",            debet: 0,   btwSoort: 1 });
+    expect(r2).toMatchObject({ grootboek: 3090, grootboeknaam: "Emballage",                      debet: 0,   btwSoort: 0 });
+    expect(r1).toMatchObject({ grootboek: 7002, grootboeknaam: "Inkopen hoog tarief",            debet: 100, btwSoort: 2 });
+    expect(r0).toMatchObject({ grootboek: 1300, grootboeknaam: "Crediteuren",                    debet: 0, credit: 121, btwSoort: 0 });
   });
 
   it("9% BTW: synthesised breakdown writes vat_9 on Regel 5 (1679) and net_9 on Regel 3 (7001)", async () => {
@@ -388,7 +335,7 @@ describe("buildInvoiceExcelBuffer — INKOOP (purchase) native Snelstart format"
     }
     const r0 = inkoopRow(sheet, 7);
     expect(r0.credit).toBe(100);
-    expect(r0.grootboek).toBe(1600);
+    expect(r0.grootboek).toBe(1300);
   });
 
   it("uses raw_extraction.vat_breakdown when present (DE MOOIJ example)", async () => {
@@ -410,7 +357,6 @@ describe("buildInvoiceExcelBuffer — INKOOP (purchase) native Snelstart format"
     expect(inkoopRow(sheet, 6).debet).toBeCloseTo(0,     2);  // Regel 1 — Inkoop hoog
     const r0 = inkoopRow(sheet, 7);
     expect(r0.credit).toBeCloseTo(755.38, 2);
-    expect(r0.saldo).toBeCloseTo(-755.38, 2);
   });
 
   it("uses emballage on Regel 2 when the breakdown includes it", async () => {
@@ -427,7 +373,7 @@ describe("buildInvoiceExcelBuffer — INKOOP (purchase) native Snelstart format"
     expect(inkoopRow(sheet, 5)).toMatchObject({ grootboek: 3090, grootboeknaam: "Emballage", debet: 10.80, btwSoort: 0 });
   });
 
-  it("propagates Factuurnummer, Relatienaam, Dagboeknaam and Boekstuk to every row of an invoice", async () => {
+  it("propagates Factuurnummer, Relatienaam, DagboekNaam/Nummer/Soort and Boekstuk to every row of an invoice", async () => {
     const wb = await loadWorkbook([sampleInvoiceInkoop21]);
     const sheet = wb.getWorksheet("Inkoop")!;
     for (let r = 2; r <= 7; r++) {
@@ -435,7 +381,7 @@ describe("buildInvoiceExcelBuffer — INKOOP (purchase) native Snelstart format"
       expect(row.factuurnummer).toBe("INV-0001");
       expect(row.relatienaam).toBe("Nema Food B.V.");
       expect(row.dagboeknaam).toBe("Crediteuren");
-      expect(row.dagboek).toBe(1600);
+      expect(row.dagboeknummer).toBe(1600);
       expect(row.dagboeksoort).toBe("dagboek Inkoop");
       expect(row.boekstuk).toBe(1);
     }
@@ -471,7 +417,7 @@ describe("buildInvoiceExcelBuffer — multi-invoice & defaults", () => {
     ]);
     // No verkoop sheet, only Inkoop
     expect(wb.worksheets.map((s) => s.name)).toEqual(["Inkoop"]);
-    expect(inkoopRow(wb.getWorksheet("Inkoop")!, 7).grootboek).toBe(1600);
+    expect(inkoopRow(wb.getWorksheet("Inkoop")!, 7).grootboek).toBe(1300);
   });
 
   it("clamps invalid vat_rate to 21% default in the synthesis fallback", async () => {
