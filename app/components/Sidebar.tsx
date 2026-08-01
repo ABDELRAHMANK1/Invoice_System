@@ -18,6 +18,7 @@ const NAV_ITEMS: Array<{
   { href: "/files",     d: I.folder,  label: "Files" },
   { href: "/clients",   d: I.users,   label: "Clients" },
   { href: "/snelstart-import", d: I.excel, label: "Snelstart Import" },
+  { href: "/templates", d: I.copy,    label: "Templates" },
   { href: "/reports",   d: I.chart,   label: "Reports" },
   { href: "/settings",  d: I.cog,     label: "Settings" },
 ];
