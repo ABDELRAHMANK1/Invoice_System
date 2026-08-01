@@ -195,12 +195,15 @@ export function NewInvoiceModal({ open, onClose, onSuccess }: NewInvoiceModalPro
         aria-modal="true"
         aria-label="New invoice"
         onClick={(e) => e.stopPropagation()}
-        style={{ maxWidth: 720 }}
+        style={{ maxWidth: 720, maxHeight: "90vh" }}
       >
         <div className="modal-head">
           <div className="modal-title"><Icon d={I.invoice} size={16} /> New invoice</div>
           <button className="iconbtn" onClick={onClose} aria-label="Close" disabled={saving}><Icon d={I.x} size={14} /></button>
         </div>
+
+        {/* Only the line-items list scrolls; these top fields stay pinned. */}
+        <div className="ni-fixed">
 
         {/* Direction — chosen explicitly, never inferred. Drives the second
             dropdown's source, the PDF issuer/bill-to roles, and which FK is written. */}
@@ -270,17 +273,21 @@ export function NewInvoiceModal({ open, onClose, onSuccess }: NewInvoiceModalPro
           <input id="ni-desc" className="form-input" value={description} onChange={(e) => setDescription(e.target.value)} placeholder={`Invoice ${invoiceNumber || "…"}`} disabled={saving} />
         </div>
 
-        {/* Line items */}
-        <div className="form-group">
+        </div>{/* /ni-fixed */}
+
+        {/* Line items — the only scrollable region; the column header stays
+            pinned and the Add-line button, totals and footer remain in view. */}
+        <div className="form-group ni-items">
           <label className="form-label">Line items</label>
-          <div style={{ border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden" }}>
-            <div style={{ display: "flex", gap: 8, padding: "6px 10px", background: "var(--surface)", fontSize: 10.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--faint)" }}>
+          <div className="ni-items-box">
+            <div className="ni-items-head" style={{ display: "flex", gap: 8, padding: "6px 10px", background: "var(--surface)", fontSize: 10.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--faint)" }}>
               <span style={{ flex: 1 }}>Description</span>
               <span style={{ width: 70, textAlign: "right" }}>Qty</span>
               <span style={{ width: 70, textAlign: "right" }}>Price</span>
               <span style={{ width: 80, textAlign: "right" }}>Total</span>
               <span style={{ width: 24 }} />
             </div>
+            <div className="ni-items-rows">
             {items.map((r) => {
               const lineTotal = computeTotals([{ description: r.description, quantity: num(r.quantity), unit_price: num(r.unit_price) }], 0).subtotal;
               return (
@@ -293,12 +300,13 @@ export function NewInvoiceModal({ open, onClose, onSuccess }: NewInvoiceModalPro
                 </div>
               );
             })}
+            </div>
           </div>
-          <button className="btn sm" style={{ marginTop: 8 }} onClick={addRow} disabled={saving}><span style={{ fontWeight: 700, fontSize: 14, lineHeight: 1 }}>+</span> Add line</button>
+          <button className="btn sm" style={{ marginTop: 8, flexShrink: 0 }} onClick={addRow} disabled={saving}><span style={{ fontWeight: 700, fontSize: 14, lineHeight: 1 }}>+</span> Add line</button>
         </div>
 
         {/* VAT + totals */}
-        <div style={{ display: "flex", gap: 16, alignItems: "flex-end" }}>
+        <div className="ni-totals" style={{ display: "flex", gap: 16, alignItems: "flex-end" }}>
           <div className="form-group" style={{ width: 110, marginBottom: 0 }}>
             <label className="form-label" htmlFor="ni-btw">VAT %</label>
             <input id="ni-btw" className="form-input" style={numberInput} inputMode="decimal" value={btwRate} onChange={(e) => setBtwRate(e.target.value)} placeholder="21" disabled={saving} />
@@ -310,7 +318,7 @@ export function NewInvoiceModal({ open, onClose, onSuccess }: NewInvoiceModalPro
           </div>
         </div>
 
-        {error && <div className="modal-error"><Icon d={I.alert} size={13} />{error}</div>}
+        {error && <div className="modal-error" style={{ flexShrink: 0 }}><Icon d={I.alert} size={13} />{error}</div>}
 
         <div className="modal-foot">
           <button className="btn" onClick={onClose} disabled={saving}>Cancel</button>
