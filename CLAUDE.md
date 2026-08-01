@@ -353,29 +353,28 @@ this is intentional, do not change it.
     (mirror of suppliers).
   - `app/(dashboard)/clients/[id]/page.tsx` — client detail with tabbed
     Suppliers / Customers tables.
-  - **Snelstart import** (raw "Alle-facturen" export → our verkoop Boekingen
-    sheet). The parse/BTW/match/summary core lives in **`lib/snelstart-convert.ts`**
-    (pure — no env/DB/IO; `convertSnelstartSheet(sheet, customers)` → `{rows,
-    summary}`), shared by a CLI and a dashboard page so the logic isn't forked:
-    - Rules: header on row 6; skip `Concept` rows; derive BTW from excl/incl
-      (snap to {0,9,21}, else zero it, row kept); Relatiecode ONLY from a fuzzy
-      customer-name match against the `customers` table (`lib/relatie-match`) —
-      the source file's own Klantnummer is deliberately ignored (different
-      system). No confident match → Relatiecode left **blank** (the builder's
-      boekstuk fallback is disabled via `buildInvoiceExcelBuffer`'s
-      `blankUnmatchedRelatiecode` option). **Reads** customers, **never writes**.
+  - **Snelstart import (CLI + shared core).** The parse/BTW/match/summary core
+    for the raw Snelstart "Alle-facturen" export → verkoop Boekingen lives in
+    **`lib/snelstart-convert.ts`** (pure — no env/DB/IO; `convertSnelstartSheet(
+    sheet, customers)` → `{rows, summary}`). Rules: header on row 6; skip
+    `Concept` rows; derive BTW from excl/incl (snap to {0,9,21}, else zero it,
+    row kept); Relatiecode ONLY from a fuzzy customer-name match against the
+    `customers` table (`lib/relatie-match`) — the source file's own Klantnummer
+    is deliberately ignored. No confident match → Relatiecode left **blank**.
+    This module also exports the shared xlsx cell helpers (`cellText`, `cellNum`,
+    `cellDateISO`) reused by the Bulk Converter below, so it stays even though its
+    only remaining consumer of `convertSnelstartSheet` is the CLI:
     - `scripts/convert-snelstart-import.ts` — CLI shell. Needs real Supabase env
       to match (`set -a; . ./.env.local; set +a` then run):
       `npx tsx scripts/convert-snelstart-import.ts <in.xlsx>` (dry-run summary)
       `[--out <file.xlsx>] [--client <uuid>]`.
-    - `app/api/snelstart-import/route.ts` — POST multipart (`file` xlsx +
-      `client_id`); validates type/size/shape, loads that client's customers,
-      converts, returns JSON `{summary, filename, file_base64}` (4xx on a
-      wrong-shape sheet).
-    - `app/(dashboard)/snelstart-import/page.tsx` — "Snelstart Import" sidebar
-      page: client picker + xlsx upload → shows the summary + unmatched-name list
-      + a download button. ⚠️ No auth (same known gap as the rest of the
-      dashboard — see §7 hosting note; do not add login here).
+    - ⚠️ The old **`/snelstart-import` dashboard page + `app/api/snelstart-import`
+      route were removed** (Aug 2026) — they duplicated the **Bulk Converter**
+      (`/bulk-converter`, see §7 key files), which is the superset: flexible
+      header detection, anomalous rates kept as real numbers, Concept drafts, and
+      unmatched Relatiecodes highlighted + commented rather than silently blank.
+      Use the Bulk Converter for the dashboard upload flow; the CLI above is the
+      only remaining `convertSnelstartSheet` caller.
 
 ### Clients, suppliers & customers (Klanten)
 
