@@ -15,6 +15,7 @@ const NAV_ITEMS: Array<{
   // exact root so it doesn't light up for every nested route.
   { href: "/",          d: I.home,    label: "Dashboard", match: (p) => p === "/" },
   { href: "/invoices",  d: I.invoice, label: "Invoices" },
+  { href: "/tasks",     d: I.bell,    label: "Tasks" },
   { href: "/files",     d: I.folder,  label: "Files" },
   { href: "/clients",   d: I.users,   label: "Clients" },
   { href: "/bulk-converter", d: I.excel, label: "Bulk Converter" },

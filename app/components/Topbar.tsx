@@ -8,6 +8,7 @@ import { ThemeToggle } from "./ThemeToggle";
 const PAGE_TITLES: Record<string, string> = {
   "/":         "Dashboard",
   "/invoices": "Invoices",
+  "/tasks":    "Tasks",
   "/files":    "Files",
   "/clients":  "Clients",
   "/reports":  "Reports",
