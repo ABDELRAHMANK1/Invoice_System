@@ -395,7 +395,107 @@ this is intentional, do not change it.
 - **Migrations** (run in order in the Supabase SQL editor): `003` clients.iban,
   `004` invoice billing fields, `005` customers table + invoices.customer_id,
   `006` invoices.customer_name (verkoop counterparty denormalisation),
-  `007` invoices.export_count + last_exported_at + `increment_invoice_exports`.
+  `007` invoices.export_count + last_exported_at + `increment_invoice_exports`,
+  `008` document_templates, `009` tasks (see "Tasks + Telegram reminders").
+
+### Tasks + Telegram reminders
+
+A task inbox for Ammar, deliberately **isolated from the invoice pipeline** —
+it touches no parser, export, or invoice code. Ammar sends a message to a
+Telegram bot, n8n turns it into a task, and a second n8n workflow polls this
+dashboard for due reminders and sends them back to Telegram.
+
+- **DB:** migration `009_tasks.sql` — table `public.tasks`. Must be run in the
+  Supabase SQL editor before the UI/API work (until then every route returns
+  `Could not find the table 'public.tasks'`). The file is idempotent and safe to
+  re-run: `create table if not exists` plus an `alter table … add column if not
+  exists last_reminder_message_id` for databases where an earlier copy of 009
+  was already applied.
+- **Statuses:** `new | in_progress | waiting | done | cancelled`.
+  **Priorities:** `low | normal | high | urgent`.
+  **Sources:** `dashboard | telegram | whatsapp | manual | n8n`.
+- **Page:** `/tasks` (`app/(dashboard)/tasks/page.tsx`). UX rules it follows —
+  keep them if you edit it:
+  - **Status and priority are inline `.pill-sel` dropdowns** that PATCH on
+    change. Every list mutation is **optimistic** (`updateTask` applies the
+    patch locally, then reverts on failure) so rows never wait on a round-trip.
+  - **Row actions are one primary + one menu**: a green ✓ Done (↺ Reopen when
+    closed) plus `⋮` opening the portalled `<Menu>`. Menu entries are built
+    per-row so an action never appears when it would do nothing — reminder
+    items only on open tasks, "Clear reminder" only when one is set, "Cancel
+    task" only when not already cancelled. **Don't move these back to bare
+    icons**: verbs like snooze/waiting/cancel can't be carried by a glyph.
+  - `<Menu>` (`app/components/Menu.tsx`) renders through a **portal** because
+    `.table-card` sets `overflow: hidden` and would clip a menu positioned
+    inside a row. It flips upward near the viewport bottom, and closes on
+    outside-click, Escape (document-level — focus may still be on the trigger),
+    scroll and resize.
+  - Stat cards come from the shared `<StatsRow>` and are **filter toggles**
+    backed by `/api/tasks/stats` (real table-wide counts, not page counts).
+  - Search is **debounced** (350 ms); there is no separate Search button, so
+    every filter applies the same way.
+  - The filter bar uses the shared `.filters/.fbar/.field/.chip` language from
+    the Invoices page — don't reintroduce ad-hoc inline-styled controls.
+
+#### API (all routes take `x-api-key`; middleware skips Basic Auth for `/api/*`)
+
+| Route | Purpose |
+|---|---|
+| `POST /api/tasks` | create (n8n posts the parsed Telegram message here) |
+| `GET /api/tasks` | list + filter; paginated `{data,total,page,limit,totalPages}` |
+| `GET/PATCH/DELETE /api/tasks/:id` | read / update / delete one task |
+| `GET /api/tasks/reminders/due` | reminders n8n should send **now** |
+| `POST /api/tasks/:id/reminded` | n8n reports the reminder was delivered |
+| `GET /api/tasks/stats` | table-wide counts for the page's stat cards |
+
+`GET /api/tasks` filters: `status`, `priority`, `source`, `q` (title /
+description / invoice number), `client`, `from` / `to` (created_at), `open=1`,
+`reminder_due=1`, plus the Telegram lookups **`telegram_chat_id`**,
+**`telegram_message_id`** and **`reminder_message_id`** — the last one is how a
+`done` / `snooze 2h` **reply** in Telegram is resolved back to its task
+(`reply_to_message.message_id` → `last_reminder_message_id`).
+
+`PATCH /api/tasks/:id` derives the timestamps: `status=done` sets
+`completed_at`, `status=cancelled` sets `cancelled_at`, anything else clears
+both.
+
+#### Reminder loop (the part that must not double-send)
+
+`GET /api/tasks/reminders/due?limit=20[&now=<iso>]` returns open tasks where
+`remind_at <= now`, then filters them through **`isReminderPending`**
+(`lib/task-reminders.ts`, pure + unit-tested). A task is pending only when:
+
+- it is not snoozed (`snoozed_until` is null or already past), **and**
+- it has not already been delivered for that same `remind_at`
+  (`reminded_at >= remind_at` → skip).
+
+That second rule is the **idempotency guard**: n8n can poll every minute and a
+reminder it already sent will not come back, even in the window before
+`remind_at` is cleared. Because it compares two columns, it runs in JS after the
+query (PostgREST can't compare columns), which is why the DB query over-fetches
+`limit * 3` and trims afterwards.
+
+After sending, n8n calls `POST /api/tasks/:id/reminded`:
+
+```json
+{ "reminded_at": "now-iso", "message_id": 4821, "next_remind_at": null, "error": null }
+```
+
+- **Success** → sets `reminded_at`, bumps `reminder_count`, clears
+  `snoozed_until` + `last_reminder_error`, stores `message_id` as
+  `last_reminder_message_id`, and sets `remind_at` to `next_remind_at`
+  (null = one-shot, so the task drops out of the due list).
+- **`error` set** (Telegram delivery failed) → records `last_reminder_error`
+  and **leaves `remind_at` in place**, so the reminder is retried on the next
+  poll. It must NOT bump `reminder_count` or set `reminded_at` — doing so would
+  silently swallow the reminder. Don't "simplify" this branch away.
+
+Snoozing (dashboard buttons, or n8n on a `snooze 2h` reply) writes the **same**
+future timestamp to both `remind_at` and `snoozed_until`.
+
+Reminder scheduling lives in n8n, **not** in Next.js — no `setTimeout` or
+browser timer can survive serverless. Times are stored as UTC `timestamptz`;
+the UI renders them in the browser's local zone via `nl-NL` formatting.
 
 ### Manual invoice creation + PDF generation
 

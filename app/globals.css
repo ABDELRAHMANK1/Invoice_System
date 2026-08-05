@@ -124,11 +124,18 @@ a.nav-item { text-decoration: none; display: flex; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .btn.primary:hover { background: #1a47c2; }
 .btn.sm { padding: 5px 10px; font-size: 12px; gap: 5px; }
+/* A disabled button must not look pressable — it read as fully enabled before. */
+.btn:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
+.btn:not(.primary):disabled:hover { background: var(--surface); border-color: var(--line); }
+.btn.primary:disabled:hover { background: var(--accent); }
 
 /* ── Stat cards ── */
 .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 20px; }
 .stat { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 16px 18px; box-shadow: var(--shadow-sm); display: flex; flex-direction: column; gap: 4px; position: relative; overflow: hidden; transition: box-shadow .15s; }
 .stat:hover { box-shadow: var(--shadow-md); }
+.stat.clickable { width: 100%; text-align: left; font: inherit; cursor: pointer; }
+.stat.clickable:hover { box-shadow: var(--shadow-md); border-color: var(--accent-line); }
+.stat.clickable[aria-pressed="true"] { border-color: var(--accent-line); background: var(--accent-soft); }
 .stat-label { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
 .stat-value { font-size: 28px; font-weight: 700; letter-spacing: -.02em; color: var(--ink); }
 .stat-value.mono { font-family: var(--mono); }
@@ -191,6 +198,45 @@ a.nav-item { text-decoration: none; display: flex; }
 .t-row:hover .row-actions { opacity: 1; }
 .act { width: 26px; height: 26px; border-radius: var(--r-sm); display: grid; place-items: center; color: var(--muted); cursor: pointer; flex-shrink: 0; border: none; background: none; transition: all .1s; text-decoration: none; }
 .act:hover { background: var(--line); color: var(--ink); }
+/* Keep actions visible instead of hover-only — for tables whose row actions are
+   the primary interaction (Tasks) rather than a secondary escape hatch. */
+.row-actions.pinned { opacity: 1; }
+.act.act-good { color: var(--good); }
+.act.act-good:hover { background: var(--good-soft); color: var(--good); }
+.act.on { background: var(--line); color: var(--ink); }
+
+/* ── Dropdown menu (portalled, fixed-positioned) ── */
+.menu { position: fixed; z-index: 300; min-width: 214px; padding: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); box-shadow: 0 12px 32px rgba(11,31,58,.16); display: flex; flex-direction: column; }
+[data-theme="dark"] .menu { box-shadow: 0 12px 32px rgba(0,0,0,.5); }
+.menu-item { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 10px; border: 0; border-radius: var(--r-sm); background: none; color: var(--ink); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.menu-item:hover { background: var(--surface-2); }
+.menu-item .menu-ico { display: grid; flex-shrink: 0; color: var(--muted); }
+.menu-item.danger { color: var(--danger); }
+.menu-item.danger:hover { background: var(--danger-soft); }
+.menu-item.danger .menu-ico { color: var(--danger); }
+.menu-sep { height: 1px; margin: 4px 2px; background: var(--line); }
+.menu-lbl { padding: 7px 10px 3px; font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
+
+/* ── Inline pill-shaped select (editable status / priority inside a row) ──
+   The wrapper carries the pill colour; the select itself is transparent so the
+   control reads as a Pill that happens to be editable. */
+.pill-sel { position: relative; display: inline-flex; align-items: center; border-radius: 99px; border: 1px solid transparent; max-width: 100%; transition: border-color .12s; }
+.pill-sel select { appearance: none; -webkit-appearance: none; width: 100%; padding: 2px 21px 2px 9px; border: 0; border-radius: 99px; background: transparent; color: inherit; font: inherit; font-size: 11.5px; font-weight: 500; line-height: 1.7; cursor: pointer; }
+.pill-sel select:focus { outline: none; }
+.pill-sel:hover { border-color: currentColor; }
+.pill-sel:focus-within { border-color: currentColor; box-shadow: 0 0 0 2px var(--accent-soft); }
+.pill-sel .pill-chev { position: absolute; right: 6px; display: grid; opacity: .6; pointer-events: none; }
+/* Native option lists don't inherit the pill colours — keep them legible. */
+.pill-sel option { background: var(--surface); color: var(--ink); font-weight: 500; }
+.pill-sel.s-good { background: var(--good-soft); color: var(--good); }
+.pill-sel.s-info { background: var(--info-soft); color: var(--info); }
+.pill-sel.s-warn { background: var(--warn-soft); color: var(--warn); }
+.pill-sel.s-danger { background: var(--danger-soft); color: var(--danger); }
+.pill-sel.s-muted { background: var(--surface-2); color: var(--muted); }
+
+/* Overdue row marker — a reminder that has come and gone needs to be findable
+   at a glance, not just inferred from red text in one cell. */
+.t-row.overdue::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--danger); }
 
 /* ── Checkbox ── */
 .cb { width: 16px; height: 16px; border-radius: 3px; border: 1.5px solid var(--faint); background: var(--surface); display: grid; place-items: center; color: #fff; cursor: pointer; flex-shrink: 0; }
