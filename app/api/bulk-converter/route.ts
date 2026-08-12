@@ -12,8 +12,9 @@
 // sibling route.
 
 import { NextRequest, NextResponse } from "next/server";
-import ExcelJS from "exceljs";
+import type ExcelJS from "exceljs";
 import { jsonError, requireInternalApiKey } from "@/lib/http";
+import { loadXlsxLenient } from "@/lib/xlsx-load";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { buildInvoiceExcelBuffer } from "@/lib/export-builders";
 import {
@@ -69,8 +70,7 @@ export async function POST(req: NextRequest) {
   // Parse the uploaded workbook.
   let sheet: ExcelJS.Worksheet | undefined;
   try {
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(Buffer.from(await file.arrayBuffer()) as unknown as ArrayBuffer);
+    const wb = await loadXlsxLenient(Buffer.from(await file.arrayBuffer()));
     sheet = sheetName ? wb.getWorksheet(sheetName) : wb.worksheets[0];
   } catch {
     return jsonError("Could not read the file as a valid .xlsx workbook", 400);
