@@ -5,7 +5,7 @@ import { Icon, I } from "@/app/components/Icon";
 
 type ClientOption = { id: string; name: string };
 
-type Summary = {
+type InvoiceSummary = {
   sheetName: string;
   detectedColumns: string[];
   headerRow: number;
@@ -23,7 +23,25 @@ type Summary = {
   anomalousInvoices: { invoice: string; rate: number }[];
 };
 
-type ConvertResult = { summary: Summary; filename: string; file_base64: string };
+type InvoiceResult = { summary: InvoiceSummary; filename: string; file_base64: string };
+
+type RelationSummary = {
+  kind: "leverancier" | "klant";
+  label: string;
+  sheetName: string;
+  headerRow: number;
+  templateColumns: number;
+  totalDataRows: number;
+  imported: number;
+  mappedColumns: string[];
+  filledColumns: string[];
+  unmappedColumns: string[];
+  unmatchedSourceColumns: string[];
+};
+
+type RelationResult = { summary: RelationSummary; filename: string; file_base64: string };
+
+type Section = "invoices" | "leverancier" | "klant";
 
 async function apiJson<T>(url: string): Promise<T> {
   const res = await fetch(url);
@@ -48,13 +66,23 @@ function downloadBase64(filename: string, base64: string) {
   URL.revokeObjectURL(url);
 }
 
-export default function BulkConverterPage() {
+function StatCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ border: "1px solid var(--line)", borderRadius: 8, padding: "10px 12px" }}>
+      <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--faint)", fontWeight: 600 }}>{label}</div>
+      <div style={{ fontSize: 16, fontWeight: 700, fontVariantNumeric: "tabular-nums", marginTop: 2 }}>{value}</div>
+    </div>
+  );
+}
+
+// ── Invoices → Snelstart Boekingen ─────────────────────────────────────────
+function InvoicesConverter() {
   const [clients, setClients] = useState<ClientOption[]>([]);
   const [clientId, setClientId] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<ConvertResult | null>(null);
+  const [result, setResult] = useState<InvoiceResult | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -76,7 +104,7 @@ export default function BulkConverterPage() {
       const res = await fetch("/api/bulk-converter", { method: "POST", body: fd });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error || `Conversion failed: ${res.status}`);
-      setResult(body as ConvertResult);
+      setResult(body as InvoiceResult);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Conversion failed");
     } finally {
@@ -87,15 +115,7 @@ export default function BulkConverterPage() {
   const s = result?.summary;
 
   return (
-    <main className="main">
-      <div className="page-h">
-        <div>
-          <h1>Bulk Converter</h1>
-          <div className="sub">Convert an external raw invoice spreadsheet into the accepted Snelstart verkoop Boekingen format. Relatiecodes are matched against the selected client’s customers.</div>
-        </div>
-      </div>
-
-      {/* Upload form */}
+    <>
       <div className="table-card" style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: 16, marginBottom: 18 }}>
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
           <div className="form-group" style={{ flex: 1, minWidth: 220, marginBottom: 0 }}>
@@ -131,7 +151,6 @@ export default function BulkConverterPage() {
         </div>
       </div>
 
-      {/* Result */}
       {s && result && (
         <div className="table-card" style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
@@ -147,7 +166,6 @@ export default function BulkConverterPage() {
             Sheet “{s.sheetName}” · header detected on row {s.headerRow} · columns: {s.detectedColumns.join(", ")}
           </div>
 
-          {/* Summary grid */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 }}>
             {[
               { label: "Imported", value: String(s.imported) },
@@ -158,12 +176,7 @@ export default function BulkConverterPage() {
               { label: "Relatiecode blank", value: String(s.blank) },
               { label: "Total incl. BTW", value: fmtEUR(s.sumIncl) },
               { label: "Total excl. BTW", value: fmtEUR(s.sumExcl) },
-            ].map((stat) => (
-              <div key={stat.label} style={{ border: "1px solid var(--line)", borderRadius: 8, padding: "10px 12px" }}>
-                <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--faint)", fontWeight: 600 }}>{stat.label}</div>
-                <div style={{ fontSize: 16, fontWeight: 700, fontVariantNumeric: "tabular-nums", marginTop: 2 }}>{stat.value}</div>
-              </div>
-            ))}
+            ].map((stat) => <StatCard key={stat.label} label={stat.label} value={stat.value} />)}
           </div>
 
           {(s.blank > 0 || s.anomalous > 0) && (
@@ -172,7 +185,6 @@ export default function BulkConverterPage() {
             </div>
           )}
 
-          {/* Unmatched names */}
           {s.unmatchedNames.length > 0 && (
             <div>
               <div style={{ fontWeight: 600, fontSize: 12.5, marginBottom: 6, display: "flex", alignItems: "center", gap: 6, color: "var(--muted)" }}>
@@ -191,7 +203,6 @@ export default function BulkConverterPage() {
             </div>
           )}
 
-          {/* Anomalous rates */}
           {s.anomalousInvoices.length > 0 && (
             <div>
               <div style={{ fontWeight: 600, fontSize: 12.5, marginBottom: 6, display: "flex", alignItems: "center", gap: 6, color: "var(--muted)" }}>
@@ -211,6 +222,147 @@ export default function BulkConverterPage() {
           )}
         </div>
       )}
+    </>
+  );
+}
+
+// ── Leveranciers / Klanten → Snelstart relation import template ─────────────
+function RelationConverter({ kind }: { kind: "leverancier" | "klant" }) {
+  const label = kind === "leverancier" ? "Leveranciers" : "Klanten";
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<RelationResult | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  async function handleConvert() {
+    if (!file) return setError("Choose an .xlsx file to convert");
+    if (!/\.xlsx$/i.test(file.name)) return setError("File must be an .xlsx spreadsheet");
+
+    setBusy(true); setError(null); setResult(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("kind", kind);
+      const res = await fetch("/api/relation-converter", { method: "POST", body: fd });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `Conversion failed: ${res.status}`);
+      setResult(body as RelationResult);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Conversion failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const s = result?.summary;
+
+  return (
+    <>
+      <div className="table-card" style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: 16, marginBottom: 18 }}>
+        <div className="form-group" style={{ marginBottom: 0 }}>
+          <label className="form-label" htmlFor={`rc-file-${kind}`}>{label} file (.xlsx) <span className="req">*</span></label>
+          <input
+            id={`rc-file-${kind}`}
+            ref={fileRef}
+            type="file"
+            accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            className="form-input"
+            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            disabled={busy}
+          />
+          <div style={{ fontSize: 11.5, color: "var(--faint)", marginTop: 4 }}>
+            Your columns are matched by name onto Snelstart’s {label.toLowerCase()} import template. Needs at least a <strong>Naam</strong> column.
+          </div>
+        </div>
+
+        {error && <div className="modal-error"><Icon d={I.alert} size={13} />{error}</div>}
+
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <button className="btn primary" onClick={handleConvert} disabled={busy || !file}>
+            {busy ? <><span className="spinner-sm" /> Converting…</> : <><Icon d={I.excel} size={13} /> Convert</>}
+          </button>
+          <span style={{ fontSize: 12, color: "var(--faint)" }}>Read-only — nothing is saved to the database.</span>
+        </div>
+      </div>
+
+      {s && result && (
+        <div className="table-card" style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+            <div style={{ fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}>
+              <Icon d={I.check} size={15} /> Converted — {s.imported} {s.label.toLowerCase()}
+            </div>
+            <button className="btn primary" onClick={() => downloadBase64(result.filename, result.file_base64)}>
+              <Icon d={I.download} size={13} /> Download {result.filename}
+            </button>
+          </div>
+
+          <div style={{ fontSize: 11.5, color: "var(--faint)" }}>
+            Sheet “{s.sheetName}” · header detected on row {s.headerRow} · conformed to the {s.templateColumns}-column Snelstart {s.label} template.
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 }}>
+            <StatCard label="Rows converted" value={String(s.imported)} />
+            <StatCard label="Columns filled" value={`${s.filledColumns.length} / ${s.templateColumns}`} />
+            <StatCard label="Source cols mapped" value={String(s.mappedColumns.length)} />
+            <StatCard label="Source cols ignored" value={String(s.unmatchedSourceColumns.length)} />
+          </div>
+
+          {s.unmatchedSourceColumns.length > 0 && (
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 12.5, marginBottom: 6, display: "flex", alignItems: "center", gap: 6, color: "var(--muted)" }}>
+                <Icon d={I.alert} size={13} /> {s.unmatchedSourceColumns.length} source column{s.unmatchedSourceColumns.length === 1 ? "" : "s"} didn’t map to the template — left out
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {s.unmatchedSourceColumns.map((c) => (
+                  <span key={c} className="pill s-warn">{c}</span>
+                ))}
+              </div>
+              <div style={{ fontSize: 11.5, color: "var(--faint)", marginTop: 8 }}>
+                Snelstart’s template has no matching column for these. Rename them in your source to a template header if they’re needed.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+export default function BulkConverterPage() {
+  const [section, setSection] = useState<Section>("invoices");
+
+  const subtitle =
+    section === "invoices"
+      ? "Convert an external raw invoice spreadsheet into the accepted Snelstart verkoop Boekingen format. Relatiecodes are matched against the selected client’s customers."
+      : section === "leverancier"
+        ? "Reshape a suppliers (Leveranciers) list into Snelstart’s accepted relation import template — same data, exact template columns."
+        : "Reshape a customers (Klanten) list into Snelstart’s accepted relation import template — same data, exact template columns.";
+
+  return (
+    <main className="main">
+      <div className="page-h">
+        <div>
+          <h1>Bulk Converter</h1>
+          <div className="sub">{subtitle}</div>
+        </div>
+      </div>
+
+      <div className="tabs-row" style={{ marginBottom: 18 }}>
+        <button className={`tab${section === "invoices" ? " on" : ""}`} onClick={() => setSection("invoices")}>
+          <Icon d={I.excel} size={14} /> Invoices
+        </button>
+        <button className={`tab${section === "leverancier" ? " on" : ""}`} onClick={() => setSection("leverancier")}>
+          <Icon d={I.excel} size={14} /> Leveranciers
+        </button>
+        <button className={`tab${section === "klant" ? " on" : ""}`} onClick={() => setSection("klant")}>
+          <Icon d={I.excel} size={14} /> Klanten
+        </button>
+      </div>
+
+      {section === "invoices" && <InvoicesConverter />}
+      {section === "leverancier" && <RelationConverter kind="leverancier" />}
+      {section === "klant" && <RelationConverter kind="klant" />}
     </main>
   );
 }
