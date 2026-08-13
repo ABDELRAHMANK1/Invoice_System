@@ -11,10 +11,12 @@ type Client = {
   phone_number: string | null;
   email: string | null;
   address: string | null;
+  postcode: string | null;
   city: string | null;
   country: string;
   btw_number: string | null;
   kvk_number: string | null;
+  rsin: string | null;
   iban: string | null;
   notes: string | null;
   created_at: string;
@@ -47,8 +49,8 @@ async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
 type ClientFormData = Omit<Client, "id" | "created_at">;
 
 const emptyForm: ClientFormData = {
-  name: "", phone_number: "", email: "", address: "",
-  city: "", country: "NL", btw_number: "", kvk_number: "", iban: "", notes: "",
+  name: "", phone_number: "", email: "", address: "", postcode: "",
+  city: "", country: "NL", btw_number: "", kvk_number: "", rsin: "", iban: "", notes: "",
 };
 
 interface ClientDrawerProps {
@@ -69,8 +71,8 @@ function ClientDrawer({ client, open, onClose, onSaved }: ClientDrawerProps) {
     if (open) {
       setForm(client
         ? { name: client.name, phone_number: client.phone_number ?? "", email: client.email ?? "",
-            address: client.address ?? "", city: client.city ?? "", country: client.country,
-            btw_number: client.btw_number ?? "", kvk_number: client.kvk_number ?? "", iban: client.iban ?? "", notes: client.notes ?? "" }
+            address: client.address ?? "", postcode: client.postcode ?? "", city: client.city ?? "", country: client.country,
+            btw_number: client.btw_number ?? "", kvk_number: client.kvk_number ?? "", rsin: client.rsin ?? "", iban: client.iban ?? "", notes: client.notes ?? "" }
         : emptyForm);
       setErrors({});
     }
@@ -100,9 +102,11 @@ function ClientDrawer({ client, open, onClose, onSaved }: ClientDrawerProps) {
         phone_number: form.phone_number || null,
         email:        form.email || null,
         address:      form.address || null,
+        postcode:     form.postcode || null,
         city:         form.city || null,
         btw_number:   form.btw_number || null,
         kvk_number:   form.kvk_number || null,
+        rsin:         form.rsin || null,
         iban:         form.iban || null,
         notes:        form.notes || null,
       };
@@ -182,11 +186,14 @@ function ClientDrawer({ client, open, onClose, onSaved }: ClientDrawerProps) {
             {field("kvk_number", "KvK number", { placeholder: "12345678", hint: "Chamber of Commerce" })}
           </div>
 
+          {field("rsin", "RSIN / fiscaal nummer", { placeholder: "123456789", hint: "Belastingdienst RSIN (legal entities)" })}
+
           {field("iban", "IBAN", { placeholder: "NL00 BANK 0000 0000 00", hint: "Used on generated invoice PDFs" })}
 
-          {field("address", "Address", { placeholder: "Keizersgracht 1" })}
+          {field("address", "Address", { placeholder: "Keizersgracht 1", hint: "Street + house number" })}
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 12 }}>
+            {field("postcode", "Postcode", { placeholder: "1015 CJ" })}
             {field("city", "City", { placeholder: "Amsterdam" })}
             <div className="form-group">
               <label className="form-label" htmlFor="cf-country">Country</label>
