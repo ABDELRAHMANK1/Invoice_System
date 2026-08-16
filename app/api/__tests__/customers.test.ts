@@ -92,6 +92,83 @@ describe("customers API", () => {
     expect(t._calls.some((c: { method: string; args: unknown[] }) => c.method === "eq" && c.args[0] === "client_id" && c.args[1] === "c1")).toBe(true);
   });
 
+  it("POST rejects btw_verlegd without a btw_number (400)", async () => {
+    mockSupabase._table("clients")._setResult({ data: { id: "c1" }, error: null });
+    const t = mockSupabase._table("customers");
+    const res = await listPost(
+      bodyReq("http://localhost/api/clients/c1/customers", "POST", { name: "Klant", btw_verlegd: true }),
+      params("c1"),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/btw_number is required/);
+    // nothing was written
+    expect(t._calls.some((c: { method: string }) => c.method === "insert")).toBe(false);
+  });
+
+  it("POST accepts btw_verlegd with a btw_number and forces the rate to 0", async () => {
+    mockSupabase._table("clients")._setResult({ data: { id: "c1" }, error: null });
+    const t = mockSupabase._table("customers");
+    t._setResult({ data: { id: "cu9", client_id: "c1", name: "Klant" }, error: null });
+
+    const res = await listPost(
+      bodyReq("http://localhost/api/clients/c1/customers", "POST", {
+        name: "Klant", btw_verlegd: true, btw_number: "NL001234567B01", btw_rate: 21,
+      }),
+      params("c1"),
+    );
+    expect(res.status).toBe(201);
+    const insert = t._calls.find((c: { method: string; args: unknown[] }) => c.method === "insert")!;
+    expect((insert.args[0] as Record<string, unknown>).btw_rate).toBe(0);
+  });
+
+  it("PATCH rejects flipping btw_verlegd on when the STORED row has no btw_number", async () => {
+    const t = mockSupabase._table("customers");
+    // The pre-read sees the stored row; the payload only carries the flag.
+    t._setResult({ data: { btw_verlegd: false, btw_number: null }, error: null });
+
+    const res = await PATCH(
+      bodyReq("http://localhost/api/clients/c1/customers/cu1", "PATCH", { btw_verlegd: true }),
+      params2("c1", "cu1"),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/btw_number is required/);
+    expect(t._calls.some((c: { method: string }) => c.method === "update")).toBe(false);
+  });
+
+  it("PATCH allows flipping btw_verlegd on when the STORED row already has a btw_number", async () => {
+    const t = mockSupabase._table("customers");
+    t._setResult({ data: { id: "cu1", btw_verlegd: true, btw_number: "NL001234567B01" }, error: null });
+
+    const res = await PATCH(
+      bodyReq("http://localhost/api/clients/c1/customers/cu1", "PATCH", { btw_verlegd: true }),
+      params2("c1", "cu1"),
+    );
+    expect(res.status).toBe(200);
+    const update = t._calls.find((c: { method: string; args: unknown[] }) => c.method === "update")!;
+    expect((update.args[0] as Record<string, unknown>).btw_rate).toBe(0);
+  });
+
+  it("PATCH rejects clearing btw_number while the STORED row is btw_verlegd", async () => {
+    const t = mockSupabase._table("customers");
+    t._setResult({ data: { btw_verlegd: true, btw_number: "NL001234567B01" }, error: null });
+
+    const res = await PATCH(
+      bodyReq("http://localhost/api/clients/c1/customers/cu1", "PATCH", { btw_number: "" }),
+      params2("c1", "cu1"),
+    );
+    expect(res.status).toBe(400);
+    expect(t._calls.some((c: { method: string }) => c.method === "update")).toBe(false);
+  });
+
+  it("PATCH returns 404 when the customer does not exist", async () => {
+    mockSupabase._table("customers")._setResult({ data: null, error: null });
+    const res = await PATCH(
+      bodyReq("http://localhost/api/clients/c1/customers/nope", "PATCH", { city: "Rotterdam" }),
+      params2("c1", "nope"),
+    );
+    expect(res.status).toBe(404);
+  });
+
   it("DELETE returns 204", async () => {
     mockSupabase._table("customers")._setResult({ data: null, error: null });
     const res = await DELETE(getReq("http://localhost/api/clients/c1/customers/cu1"), params2("c1", "cu1"));

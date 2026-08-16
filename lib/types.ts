@@ -44,7 +44,28 @@ export interface Supplier {
   updated_at: string;
 }
 
+/** How a customer is billed — drives the meaning of `default_rate`. */
+export const PRICING_MODELS = ["hourly", "per_stop", "lump_sum"] as const;
+export type PricingModel = (typeof PRICING_MODELS)[number];
+
+/** The BTW rates modelled everywhere in this codebase (Dutch rates only). */
+export const BTW_RATES = [21, 9, 0] as const;
+
+/**
+ * Customer-only columns — the invoicing settings that don't exist on
+ * `suppliers`. Kept separate so the shared counterparty modal can type them as
+ * optional on a supplier record.
+ */
+export interface CustomerExtras {
+  btw_rate: number;
+  btw_verlegd: boolean;
+  pricing_model: PricingModel;
+  default_rate: number | null;
+  aliases: string[] | null;
+  message_pattern: string | null;
+}
+
 // A client's customers (Klanten) — the parties it SELLS to. The `customers`
-// table mirrors `suppliers` column-for-column (see migration 005), so the
-// shape is identical; kept as a distinct type for call-site clarity.
-export type Customer = Supplier;
+// table started as a column-for-column mirror of `suppliers` (migration 005)
+// and has since grown its own invoicing settings (see CustomerExtras).
+export interface Customer extends Supplier, CustomerExtras {}
