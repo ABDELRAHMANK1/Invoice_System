@@ -1,24 +1,27 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { aliasesSchema, aliasesPatch } from "@/lib/aliases";
 import { jsonError, requireInternalApiKey } from "@/lib/http";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
 export const runtime = "nodejs";
 
 const patchSchema = z.object({
-  name:         z.string().min(1).max(200).optional(),
-  phone_number: z.string().max(32).optional().nullable(),
-  email:        z.string().email().optional().nullable().or(z.literal("")),
-  address:      z.string().max(500).optional().nullable(),
-  postcode:     z.string().max(20).optional().nullable(),
-  city:         z.string().max(200).optional().nullable(),
-  country:      z.string().length(2).optional(),
-  btw_number:   z.string().max(50).optional().nullable(),
-  kvk_number:   z.string().max(20).optional().nullable(),
-  rsin:         z.string().max(20).optional().nullable(),
-  iban:         z.string().max(50).optional().nullable(),
-  relatie_code: z.string().max(50).optional().nullable(),
-  notes:        z.string().max(2000).optional().nullable(),
+  name:           z.string().min(1).max(200).optional(),
+  phone_number:   z.string().max(32).optional().nullable(),
+  whatsapp_phone: z.string().max(32).optional().nullable(),
+  email:          z.string().email().optional().nullable().or(z.literal("")),
+  address:        z.string().max(500).optional().nullable(),
+  postcode:       z.string().max(20).optional().nullable(),
+  city:           z.string().max(200).optional().nullable(),
+  country:        z.string().length(2).optional(),
+  btw_number:     z.string().max(50).optional().nullable(),
+  kvk_number:     z.string().max(20).optional().nullable(),
+  rsin:           z.string().max(20).optional().nullable(),
+  iban:           z.string().max(50).optional().nullable(),
+  aliases:        aliasesSchema,
+  relatie_code:   z.string().max(50).optional().nullable(),
+  notes:          z.string().max(2000).optional().nullable(),
 });
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -63,8 +66,12 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   const parsed = patchSchema.safeParse(await req.json().catch(() => ({})));
   if (!parsed.success) return jsonError("Invalid client data", 400, parsed.error.flatten());
 
-  const { email, ...rest } = parsed.data;
-  const payload = { ...rest, ...(email !== undefined ? { email: email || null } : {}) };
+  const { email, aliases, ...rest } = parsed.data;
+  const payload = {
+    ...rest,
+    ...(email !== undefined ? { email: email || null } : {}),
+    ...aliasesPatch(aliases),
+  };
 
   const { data, error } = await supabaseAdmin
     .from("clients")

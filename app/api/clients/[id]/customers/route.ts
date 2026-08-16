@@ -1,13 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { aliasesPatch } from "@/lib/aliases";
+import {
+  btwVerlegdError,
+  customerInvoicingFields,
+  mergeBtwVerlegdState,
+  normaliseBtwVerlegd,
+} from "@/lib/customer-schema";
 import { jsonError, requireInternalApiKey } from "@/lib/http";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
 export const runtime = "nodejs";
 
-// Customers (Klanten) — the parties a client SELLS to. Mirror of the suppliers
-// endpoint, pointed at the `customers` table (see migration 005). The verkoop
-// invoice flow isn't built yet; this just manages the counterparty records.
+// Customers (Klanten) — the parties a client SELLS to. Started as a mirror of
+// the suppliers endpoint pointed at the `customers` table (see migration 005),
+// plus the customer-only invoicing settings.
 const createSchema = z.object({
   name:         z.string().min(1).max(200),
   relatie_code: z.string().max(50).optional().nullable(),
@@ -21,6 +28,7 @@ const createSchema = z.object({
   phone:        z.string().max(32).optional().nullable(),
   payment_days: z.number().int().min(0).max(365).optional().nullable(),
   active:       z.boolean().optional(),
+  ...customerInvoicingFields,
 });
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -62,6 +70,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return jsonError("Invalid customer data", 400, parsed.error.flatten());
   }
 
+  // Same reverse-charge rule as PATCH; a create has no stored row to merge over.
+  const verlegdError = btwVerlegdError(mergeBtwVerlegdState({}, parsed.data));
+  if (verlegdError) {
+    console.warn(`[customers.POST] client_id=${id} rejected: ${verlegdError}`);
+    return jsonError(verlegdError, 400);
+  }
+
   // Pre-check the client exists — surfaces the real cause when a stale dashboard
   // tries to insert against a deleted client_id (which previously bubbled up as
   // a confusing "violates foreign key constraint" 500).
@@ -79,8 +94,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return jsonError("Client not found", 404);
   }
 
-  const { email, ...rest } = parsed.data;
-  const payload = { ...rest, client_id: id, email: email || null };
+  const { email, aliases, ...rest } = normaliseBtwVerlegd(parsed.data);
+  const payload = { ...rest, client_id: id, email: email || null, ...aliasesPatch(aliases) };
 
   const { data, error } = await supabaseAdmin
     .from("customers")

@@ -5,28 +5,37 @@ import Link from "next/link";
 import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Icon, I } from "@/app/components/Icon";
 import { useToast } from "@/app/components/Toast";
-import type { Supplier } from "@/lib/types";
+import { formatAliases, parseAliases } from "@/lib/aliases";
+import { BTW_RATES, PRICING_MODELS } from "@/lib/types";
+import type { CustomerExtras, PricingModel, Supplier } from "@/lib/types";
 
 type Client = {
   id: string;
   name: string;
   phone_number: string | null;
+  whatsapp_phone: string | null;
   email: string | null;
   address: string | null;
+  postcode: string | null;
   city: string | null;
   country: string;
   btw_number: string | null;
   kvk_number: string | null;
+  iban: string | null;
+  aliases: string[] | null;
   relatie_code: string | null;
   notes: string | null;
   created_at: string;
 };
 
-type ClientForm = Omit<Client, "id" | "created_at">;
+// `aliases` is a text[] on the client record but a comma-separated string in
+// the form — see lib/aliases.
+type ClientForm = Omit<Client, "id" | "created_at" | "aliases"> & { aliases: string };
 
 const emptyClientForm: ClientForm = {
-  name: "", phone_number: "", email: "", address: "", city: "", country: "NL",
-  btw_number: "", kvk_number: "", relatie_code: "", notes: "",
+  name: "", phone_number: "", whatsapp_phone: "", email: "", address: "",
+  postcode: "", city: "", country: "NL", btw_number: "", kvk_number: "",
+  iban: "", aliases: "", relatie_code: "", notes: "",
 };
 
 // Suppliers (Leveranciers) and Customers (Klanten) share an identical record
@@ -34,8 +43,9 @@ const emptyClientForm: ClientForm = {
 // single "kind" parametrises the modal, import, and table for both.
 type Kind = "supplier" | "customer";
 
-// A counterparty record — same shape for both kinds.
-type Counterparty = Supplier;
+// A counterparty record. Customers carry extra invoicing settings that
+// suppliers don't have, so those are optional on the shared shape.
+type Counterparty = Supplier & Partial<CustomerExtras>;
 
 interface KindConfig {
   /** URL ?tab value */
@@ -77,13 +87,53 @@ function kindFromTab(tab: string | null): Kind {
   return tab === "klanten" ? "customer" : "supplier";
 }
 
-type CounterpartyForm = Omit<Counterparty, "id" | "client_id" | "created_at" | "updated_at">;
-
-const emptyCounterpartyForm: CounterpartyForm = {
-  name: "", relatie_code: "", address: "", postcode: "", city: "",
-  kvk: "", btw_number: "", iban: "", email: "", phone: "",
-  payment_days: 0, active: true,
+// The form mirrors the record except for the two fields the DOM edits as text:
+// `aliases` (a text[] column, comma-separated in the input) and `default_rate`
+// (nullable numeric — kept as a string so the box can be left empty).
+type CounterpartyForm = {
+  name: string;
+  relatie_code: string;
+  address: string;
+  postcode: string;
+  city: string;
+  kvk: string;
+  btw_number: string;
+  iban: string;
+  email: string;
+  phone: string;
+  payment_days: number;
+  active: boolean;
+  // Customer-only (Invoicing settings) — ignored for suppliers.
+  btw_verlegd: boolean;
+  btw_rate: number;
+  pricing_model: PricingModel;
+  default_rate: string;
+  aliases: string;
+  message_pattern: string;
 };
+
+const PRICING_MODEL_LABELS: Record<PricingModel, string> = {
+  hourly:   "Per hour",
+  per_stop: "Per stop",
+  lump_sum: "Lump sum",
+};
+
+const DEFAULT_RATE_LABELS: Record<PricingModel, string> = {
+  hourly:   "Rate per hour",
+  per_stop: "Rate per stop",
+  lump_sum: "Default amount",
+};
+
+// Customers default to a 30-day payment term; suppliers keep the old 0.
+function emptyCounterpartyForm(kind: Kind): CounterpartyForm {
+  return {
+    name: "", relatie_code: "", address: "", postcode: "", city: "",
+    kvk: "", btw_number: "", iban: "", email: "", phone: "",
+    payment_days: kind === "customer" ? 30 : 0, active: true,
+    btw_verlegd: false, btw_rate: 21, pricing_model: "hourly",
+    default_rate: "", aliases: "", message_pattern: "",
+  };
+}
 
 const CLIENT_COLORS = ["#1d4ed8","#2563eb","#1f8a5b","#7a5af0","#b45309","#c0392b","#0e7490","#9333ea"];
 
@@ -117,8 +167,9 @@ interface CounterpartyModalProps {
 
 function CounterpartyModal({ clientId, kind, record, open, onClose, onSaved }: CounterpartyModalProps) {
   const cfg = KINDS[kind];
+  const isCustomer = kind === "customer";
   const { toast } = useToast();
-  const [form, setForm] = useState<CounterpartyForm>(emptyCounterpartyForm);
+  const [form, setForm] = useState<CounterpartyForm>(() => emptyCounterpartyForm(kind));
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<Partial<Record<keyof CounterpartyForm, string>>>({});
 
@@ -138,11 +189,17 @@ function CounterpartyModal({ clientId, kind, record, open, onClose, onSaved }: C
             phone: record.phone ?? "",
             payment_days: record.payment_days ?? 0,
             active: record.active,
+            btw_verlegd: record.btw_verlegd ?? false,
+            btw_rate: record.btw_rate ?? 21,
+            pricing_model: record.pricing_model ?? "hourly",
+            default_rate: record.default_rate == null ? "" : String(record.default_rate),
+            aliases: formatAliases(record.aliases),
+            message_pattern: record.message_pattern ?? "",
           }
-        : emptyCounterpartyForm);
+        : emptyCounterpartyForm(kind));
       setErrors({});
     }
-  }, [open, record]);
+  }, [open, record, kind]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) { if (e.key === "Escape" && open) onClose(); }
@@ -154,6 +211,11 @@ function CounterpartyModal({ clientId, kind, record, open, onClose, onSaved }: C
     const e: typeof errors = {};
     if (!form.name.trim()) e.name = "Name is required";
     if (form.email && !/^[^@]+@[^@]+\.[^@]+$/.test(form.email)) e.email = "Invalid email";
+    // Reverse charge puts the recipient's VAT number on the invoice notice —
+    // without it the notice is invalid, so the field becomes required.
+    if (isCustomer && form.btw_verlegd && !form.btw_number.trim()) {
+      e.btw_number = "BTW number is required when BTW verlegd is on";
+    }
     setErrors(e);
     return Object.keys(e).length === 0;
   }
@@ -175,6 +237,15 @@ function CounterpartyModal({ clientId, kind, record, open, onClose, onSaved }: C
         phone:        form.phone || null,
         payment_days: Number(form.payment_days ?? 0),
         active:       form.active,
+        // Invoicing settings only exist on customers.
+        ...(isCustomer ? {
+          btw_verlegd:     form.btw_verlegd,
+          btw_rate:        form.btw_verlegd ? 0 : Number(form.btw_rate),
+          pricing_model:   form.pricing_model,
+          default_rate:    form.default_rate.trim() === "" ? null : Number(form.default_rate),
+          aliases:         parseAliases(form.aliases),
+          message_pattern: form.message_pattern.trim() || null,
+        } : {}),
       };
       const saved = record
         ? await apiJson<Counterparty>(`${cfg.apiBase(clientId)}/${record.id}`, {
@@ -252,7 +323,7 @@ function CounterpartyModal({ clientId, kind, record, open, onClose, onSaved }: C
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             {input("kvk", "KvK")}
-            {input("btw_number", "BTW number")}
+            {input("btw_number", "BTW number", { required: isCustomer && form.btw_verlegd })}
           </div>
 
           {input("iban", "IBAN", { placeholder: "NL00 BANK 0123 4567 89" })}
@@ -274,6 +345,96 @@ function CounterpartyModal({ clientId, kind, record, open, onClose, onSaved }: C
               <span>Active</span>
             </label>
           </div>
+
+          {isCustomer && (
+            <>
+              <h4 style={{
+                margin: 0, paddingTop: 4, borderTop: "1px solid var(--line)",
+                fontSize: 12.5, fontWeight: 600, color: "var(--ink-2)", letterSpacing: ".02em",
+              }}>
+                Invoicing settings
+              </h4>
+
+              <div className="form-group">
+                <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={form.btw_verlegd}
+                    onChange={(e) => {
+                      const on = e.target.checked;
+                      // Reverse charge means no VAT is charged at all, so the
+                      // rate is pinned to 0 (and back to the 21% default when off).
+                      setForm((f) => ({ ...f, btw_verlegd: on, btw_rate: on ? 0 : 21 }));
+                      setErrors((er) => { const n = { ...er }; delete n.btw_number; return n; });
+                    }}
+                  />
+                  <span>BTW verlegd (reverse charge)</span>
+                </label>
+                <div className="form-hint">
+                  No VAT is charged; the invoice states the reverse-charge notice with the recipient&apos;s VAT number.
+                </div>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div className="form-group">
+                  <label className="form-label" htmlFor="sf-btw_rate">BTW rate</label>
+                  <select
+                    id="sf-btw_rate"
+                    className="form-input"
+                    value={String(form.btw_rate)}
+                    disabled={form.btw_verlegd}
+                    onChange={(e) => setForm((f) => ({ ...f, btw_rate: Number(e.target.value) }))}
+                  >
+                    {BTW_RATES.map((r) => <option key={r} value={r}>{r}%</option>)}
+                  </select>
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label" htmlFor="sf-pricing_model">Pricing model</label>
+                  <select
+                    id="sf-pricing_model"
+                    className="form-input"
+                    value={form.pricing_model}
+                    onChange={(e) => setForm((f) => ({ ...f, pricing_model: e.target.value as PricingModel }))}
+                  >
+                    {PRICING_MODELS.map((m) => (
+                      <option key={m} value={m}>{PRICING_MODEL_LABELS[m]}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div className="form-group">
+                  <label className="form-label" htmlFor="sf-default_rate">
+                    {DEFAULT_RATE_LABELS[form.pricing_model]}
+                  </label>
+                  <input
+                    id="sf-default_rate"
+                    className="form-input"
+                    type="number"
+                    step="0.01"
+                    value={form.default_rate}
+                    placeholder="0.00"
+                    onChange={(e) => setForm((f) => ({ ...f, default_rate: e.target.value }))}
+                  />
+                </div>
+                {input("aliases", "Aliases", { placeholder: "buki, buki koeriers" })}
+              </div>
+
+              <div className="form-group">
+                <label className="form-label" htmlFor="sf-message_pattern">Message pattern</label>
+                <textarea
+                  id="sf-message_pattern"
+                  className="form-input"
+                  rows={3}
+                  value={form.message_pattern}
+                  placeholder="e.g. Sends RT TWB route codes with hours:minutes and price per hour, ends the message with the company name."
+                  onChange={(e) => setForm((f) => ({ ...f, message_pattern: e.target.value }))}
+                />
+              </div>
+            </>
+          )}
         </div>
 
         <div className="dr-foot">
@@ -504,12 +665,16 @@ function ClientDetailView() {
       setForm({
         name: c.name,
         phone_number: c.phone_number ?? "",
+        whatsapp_phone: c.whatsapp_phone ?? "",
         email: c.email ?? "",
         address: c.address ?? "",
+        postcode: c.postcode ?? "",
         city: c.city ?? "",
         country: c.country,
         btw_number: c.btw_number ?? "",
         kvk_number: c.kvk_number ?? "",
+        iban: c.iban ?? "",
+        aliases: formatAliases(c.aliases),
         relatie_code: c.relatie_code ?? "",
         notes: c.notes ?? "",
       });
@@ -537,16 +702,20 @@ function ClientDetailView() {
     setSaving(true);
     try {
       const payload = {
-        name:         form.name,
-        phone_number: form.phone_number || null,
-        email:        form.email || null,
-        address:      form.address || null,
-        city:         form.city || null,
-        country:      form.country,
-        btw_number:   form.btw_number || null,
-        kvk_number:   form.kvk_number || null,
-        relatie_code: form.relatie_code || null,
-        notes:        form.notes || null,
+        name:           form.name,
+        phone_number:   form.phone_number || null,
+        whatsapp_phone: form.whatsapp_phone || null,
+        email:          form.email || null,
+        address:        form.address || null,
+        postcode:       form.postcode || null,
+        city:           form.city || null,
+        country:        form.country,
+        btw_number:     form.btw_number || null,
+        kvk_number:     form.kvk_number || null,
+        iban:           form.iban || null,
+        aliases:        parseAliases(form.aliases),
+        relatie_code:   form.relatie_code || null,
+        notes:          form.notes || null,
       };
       const saved = await apiJson<Client>(`/api/clients/${clientId}`, {
         method: "PATCH",
@@ -660,13 +829,27 @@ function ClientDetailView() {
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          {field("whatsapp_phone", "WhatsApp phone", {
+            placeholder: "+31 6 12 34 56 78",
+            hint: "Only if different from the phone above — this is the number the client sends invoices from on WhatsApp",
+          })}
+          {field("aliases", "Aliases", {
+            placeholder: "akram, akram transport",
+            hint: "Alternative names this client might be referred to by",
+          })}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
           {field("btw_number", "BTW number")}
           {field("kvk_number", "KvK number")}
         </div>
 
+        {field("iban", "IBAN", { placeholder: "NL00 BANK 0123 4567 89" })}
+
         {field("address", "Address")}
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 12 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "120px 1fr auto", gap: 12 }}>
+          {field("postcode", "Postcode")}
           {field("city", "City")}
           <div className="form-group">
             <label className="form-label" htmlFor="cf-country">Country</label>
