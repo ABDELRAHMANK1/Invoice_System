@@ -26,7 +26,9 @@ export const customerInvoicingFields = {
  * drawer already pins it, but a direct API caller could send an inconsistent
  * pair — normalise it here rather than storing a contradiction.
  */
-export function normaliseBtwVerlegd<T extends { btw_verlegd?: boolean; btw_rate?: number }>(data: T): T {
+export function normaliseBtwVerlegd<T extends { btw_verlegd?: boolean; btw_rate?: number }>(
+  data: T,
+): T & { btw_rate?: number } {
   return data.btw_verlegd === true ? { ...data, btw_rate: 0 } : data;
 }
 

@@ -65,6 +65,53 @@ describe("tasks API", () => {
     expect((insert?.args[0] as Record<string, unknown>).remind_at).toBe("2026-08-05T07:00:00.000Z");
   });
 
+  it("POST falls back to the owner chat id when no Telegram chat is supplied", async () => {
+    const t = mockSupabase._table("tasks");
+    t._setResult({ data: { id: "task-2", title: "Check the export" }, error: null });
+
+    // A dashboard task carries no chat of its own.
+    const res = await createTask(bodyReq("http://localhost/api/tasks", "POST", {
+      title: "Check the export",
+      source: "dashboard",
+    }));
+    expect(res.status).toBe(201);
+
+    const insert = t._calls.find((c: { method: string; args: unknown[] }) => c.method === "insert");
+    const row = insert?.args[0] as Record<string, unknown>;
+    // telegram_chat_id is NOT NULL — an explicit null would bypass the column
+    // default and fail the constraint.
+    expect(row.telegram_chat_id).toBe("6755894934");
+    expect(row.telegram_chat_id).not.toBeNull();
+  });
+
+  it("POST keeps the real chat id from the Telegram inbox", async () => {
+    const t = mockSupabase._table("tasks");
+    t._setResult({ data: { id: "task-3", title: "Bel Diaa" }, error: null });
+
+    await createTask(bodyReq("http://localhost/api/tasks", "POST", {
+      title: "Bel Diaa",
+      source: "telegram",
+      telegram_chat_id: "998877",
+    }));
+
+    const insert = t._calls.find((c: { method: string; args: unknown[] }) => c.method === "insert");
+    expect((insert?.args[0] as Record<string, unknown>).telegram_chat_id).toBe("998877");
+  });
+
+  it("POST treats a blank chat id as absent rather than writing it through", async () => {
+    const t = mockSupabase._table("tasks");
+    t._setResult({ data: { id: "task-4", title: "Blank chat" }, error: null });
+
+    await createTask(bodyReq("http://localhost/api/tasks", "POST", {
+      title: "Blank chat",
+      source: "n8n",
+      telegram_chat_id: "   ",
+    }));
+
+    const insert = t._calls.find((c: { method: string; args: unknown[] }) => c.method === "insert");
+    expect((insert?.args[0] as Record<string, unknown>).telegram_chat_id).toBe("6755894934");
+  });
+
   it("GET lists tasks with filters", async () => {
     const t = mockSupabase._table("tasks");
     t._setResult({ data: [{ id: "task-1", title: "Review export" }], error: null, count: 1 });

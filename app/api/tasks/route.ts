@@ -9,6 +9,16 @@ const TASK_STATUSES = ["new", "in_progress", "waiting", "done", "cancelled"] as 
 const TASK_PRIORITIES = ["low", "normal", "high", "urgent"] as const;
 const TASK_SOURCES = ["dashboard", "telegram", "whatsapp", "manual", "n8n"] as const;
 
+// The account owner's Telegram chat. Tasks that don't come from a Telegram
+// message (dashboard, manual, n8n) have no chat of their own, so their
+// reminders are delivered here.
+//
+// tasks.telegram_chat_id is NOT NULL with this as its column default, so the
+// value must never be sent as an explicit null: an explicit null bypasses the
+// default and fails the constraint. Omitting the key would work too, but
+// setting it keeps the inserted row and the stored row identical.
+const TELEGRAM_FALLBACK_CHAT_ID = "6755894934";
+
 const dateField = z.union([z.string(), z.literal("")]).optional().nullable();
 
 const createSchema = z.object({
@@ -135,7 +145,9 @@ export async function POST(req: NextRequest) {
     client_name:            parsed.data.client_name || null,
     related_invoice_id:     parsed.data.related_invoice_id ?? null,
     related_invoice_number: parsed.data.related_invoice_number || null,
-    telegram_chat_id:       parsed.data.telegram_chat_id || null,
+    // A real chat id from the Telegram inbox always wins; everything else
+    // (absent, or empty after the schema's trim) falls back to the owner.
+    telegram_chat_id:       parsed.data.telegram_chat_id || TELEGRAM_FALLBACK_CHAT_ID,
     telegram_message_id:    parsed.data.telegram_message_id || null,
     telegram_from:          parsed.data.telegram_from || null,
     telegram_thread_id:     parsed.data.telegram_thread_id || null,
