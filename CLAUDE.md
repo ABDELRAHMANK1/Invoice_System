@@ -389,6 +389,13 @@ this is intentional, do not change it.
 - `GET /api/clients/:id` returns the client with **both** `suppliers` and
   `customers` nested (active-first, then by name), so the modal / detail tabs
   populate from one fetch.
+- `GET /api/clients/by-whatsapp?phone=31612345678` (n8n-facing, read-only) maps a
+  WhatsApp sender to a client → `{found:true, client_id, name, relatie_code}` or
+  `{found:false}` **with HTTP 200** — an unknown sender is a normal outcome, so
+  don't turn it into a 404. It matches `whatsapp_phone` OR `phone_number`: the
+  `phonePattern` ilike only *narrows* candidates (it tolerates separators but
+  also lets extra digits through), and digits-only equality via `phoneDigits`
+  (`lib/query.ts`) is the authoritative check, so `0031…` never matches `31…`.
 - `invoices` has both `supplier_id` (inkoop) and `customer_id` (verkoop), with a
   CHECK that at most one is set (`invoices_one_counterparty`). Both-null stays
   legal — the n8n OCR pipeline inserts free-text rows with no FKs.

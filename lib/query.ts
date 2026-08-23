@@ -27,6 +27,15 @@ export function phonePattern(normalisedDigits: string): string {
   return "%" + normalisedDigits.split("").join("%") + "%";
 }
 
+/**
+ * Strip a phone number down to bare digits, dropping a leading "+", spaces,
+ * dashes and brackets. Used to compare a WhatsApp sender ("31612345678")
+ * against however the number happens to be formatted in the DB.
+ */
+export function phoneDigits(phone?: string | null): string {
+  return (phone || "").replace(/\D/g, "");
+}
+
 export function applyCommonFilters(
   query: any,
   filters: ReturnType<typeof filtersFromRequest>,
