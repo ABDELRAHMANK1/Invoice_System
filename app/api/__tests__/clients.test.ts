@@ -10,6 +10,7 @@ vi.mock("@/lib/supabase-admin", () => ({ supabaseAdmin: mockSupabase }));
 
 import { GET as listGet, POST as listPost } from "@/app/api/clients/route";
 import { GET as getOne, PATCH, DELETE } from "@/app/api/clients/[id]/route";
+import { GET as byWhatsapp } from "@/app/api/clients/by-whatsapp/route";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -79,5 +80,74 @@ describe("clients API", () => {
     mockSupabase._table("clients")._setResult({ data: null, error: null });
     const res = await DELETE(getReq("http://localhost/api/clients/c1"), params("c1"));
     expect(res.status).toBe(204);
+  });
+});
+
+describe("GET /api/clients/by-whatsapp", () => {
+  const url = (phone: string) => `http://localhost/api/clients/by-whatsapp?phone=${phone}`;
+
+  it("matches whatsapp_phone despite formatting differences", async () => {
+    mockSupabase._table("clients")._setResult({
+      data: [{ id: "c1", name: "Akram", relatie_code: "40", whatsapp_phone: "+31 6-12 34 56 78", phone_number: null }],
+      error: null,
+    });
+    const res = await byWhatsapp(getReq(url("31612345678")));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ found: true, client_id: "c1", name: "Akram", relatie_code: "40" });
+  });
+
+  it("falls back to phone_number when whatsapp_phone is unset", async () => {
+    mockSupabase._table("clients")._setResult({
+      data: [{ id: "c2", name: "Buki", relatie_code: null, whatsapp_phone: null, phone_number: "+31612345678" }],
+      error: null,
+    });
+    const body = await (await byWhatsapp(getReq(url("31612345678")))).json();
+    expect(body).toEqual({ found: true, client_id: "c2", name: "Buki", relatie_code: null });
+  });
+
+  it("prefers the whatsapp_phone match over a phone_number match", async () => {
+    mockSupabase._table("clients")._setResult({
+      data: [
+        { id: "c1", name: "Phone only", relatie_code: "1", whatsapp_phone: null, phone_number: "0031612345678" },
+        { id: "c2", name: "WhatsApp", relatie_code: "2", whatsapp_phone: "31612345678", phone_number: null },
+      ],
+      error: null,
+    });
+    const body = await (await byWhatsapp(getReq(url("31612345678")))).json();
+    expect(body.client_id).toBe("c2");
+  });
+
+  it("returns found:false with HTTP 200 for an unknown sender", async () => {
+    mockSupabase._table("clients")._setResult({ data: [], error: null });
+    const res = await byWhatsapp(getReq(url("31699999999")));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ found: false });
+  });
+
+  it("rejects a loose ilike candidate that is not a digits-only equal", async () => {
+    // "0031612345678" contains the queried digits in order, so the ilike
+    // pattern lets it through — digits-only equality must still reject it.
+    mockSupabase._table("clients")._setResult({
+      data: [{ id: "c9", name: "Other", relatie_code: "9", whatsapp_phone: "0031612345678", phone_number: null }],
+      error: null,
+    });
+    expect(await (await byWhatsapp(getReq(url("31612345678")))).json()).toEqual({ found: false });
+  });
+
+  it("400s when phone is missing or has no digits", async () => {
+    expect((await byWhatsapp(getReq("http://localhost/api/clients/by-whatsapp"))).status).toBe(400);
+    expect((await byWhatsapp(getReq(url("%2B%2B")))).status).toBe(400);
+  });
+
+  it("queries both columns and never writes", async () => {
+    const t = mockSupabase._table("clients");
+    t._setResult({ data: [], error: null });
+    await byWhatsapp(getReq(url("31612345678")));
+    const or = t._calls.find((c: { method: string; args: unknown[] }) => c.method === "or")!;
+    expect(or.args[0]).toContain("whatsapp_phone.ilike.");
+    expect(or.args[0]).toContain("phone_number.ilike.");
+    const writes = t._calls.filter((c: { method: string }) =>
+      ["insert", "update", "delete", "upsert"].includes(c.method));
+    expect(writes).toHaveLength(0);
   });
 });
