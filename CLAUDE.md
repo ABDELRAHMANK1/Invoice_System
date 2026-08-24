@@ -390,12 +390,28 @@ this is intentional, do not change it.
   `customers` nested (active-first, then by name), so the modal / detail tabs
   populate from one fetch.
 - `GET /api/clients/by-whatsapp?phone=31612345678` (n8n-facing, read-only) maps a
-  WhatsApp sender to a client → `{found:true, client_id, name, relatie_code}` or
-  `{found:false}` **with HTTP 200** — an unknown sender is a normal outcome, so
-  don't turn it into a 404. It matches `whatsapp_phone` OR `phone_number`: the
-  `phonePattern` ilike only *narrows* candidates (it tolerates separators but
-  also lets extra digits through), and digits-only equality via `phoneDigits`
-  (`lib/query.ts`) is the authoritative check, so `0031…` never matches `31…`.
+  WhatsApp sender to a client so the invoice flow can identify it instead of
+  guessing. Returns `{found:true, client_id, name, relatie_code, client:{…},
+  customers:[…]}` or `{found:false}` **with HTTP 200** — an unknown sender is a
+  normal outcome, so don't turn it into a 404.
+  - It matches `whatsapp_phone` OR `phone_number`: the `phonePattern` ilike only
+    *narrows* candidates (it tolerates separators but also lets extra digits
+    through), and digits-only equality via `phoneDigits` (`lib/query.ts`) is the
+    authoritative check, so `0031…` never matches `31…`.
+  - `client` = the full invoicing record (`address, postcode, city, phone_number,
+    email, iban, btw_number, kvk_number, relatie_code`); `whatsapp_phone` is
+    selected for the match but stripped from the response. `customers` = the
+    client's **`active = true`** customers by name (`id, name, address, postcode,
+    city, btw_number, kvk, relatie_code`) with their invoicing settings
+    (`btw_rate, btw_verlegd, pricing_model, default_rate, payment_days, aliases,
+    message_pattern`). A failed customer lookup 500s — n8n must not read "lookup
+    broke" as "this client has no customers".
+  - **Column names differ between the two tables**: `clients.kvk_number` vs
+    `customers.kvk`, and `clients.phone_number` vs `customers.phone`. Don't
+    harmonise them.
+  - `client_id` / `name` / `relatie_code` stay at the **top level** as well as
+    inside `client` — the n8n Merge Lookup node reads them from there, so
+    removing them is a breaking change.
 - `invoices` has both `supplier_id` (inkoop) and `customer_id` (verkoop), with a
   CHECK that at most one is set (`invoices_one_counterparty`). Both-null stays
   legal — the n8n OCR pipeline inserts free-text rows with no FKs.
