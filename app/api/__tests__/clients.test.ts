@@ -86,23 +86,89 @@ describe("clients API", () => {
 describe("GET /api/clients/by-whatsapp", () => {
   const url = (phone: string) => `http://localhost/api/clients/by-whatsapp?phone=${phone}`;
 
+  // A full client row as the DB returns it, whatsapp_phone included.
+  const clientRow = (over: Record<string, unknown> = {}) => ({
+    id: "c1", name: "Akram", address: "Govert Flinckstraat 18", postcode: "3021 AB",
+    city: "Rotterdam", phone_number: null, email: "info@akram.nl", iban: "NL00BANK",
+    btw_number: "NL8123", kvk_number: "12345678", relatie_code: "40",
+    whatsapp_phone: "+31 6-12 34 56 78", ...over,
+  });
+
   it("matches whatsapp_phone despite formatting differences", async () => {
-    mockSupabase._table("clients")._setResult({
-      data: [{ id: "c1", name: "Akram", relatie_code: "40", whatsapp_phone: "+31 6-12 34 56 78", phone_number: null }],
-      error: null,
-    });
+    mockSupabase._table("clients")._setResult({ data: [clientRow()], error: null });
+    mockSupabase._table("customers")._setResult({ data: [], error: null });
     const res = await byWhatsapp(getReq(url("31612345678")));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ found: true, client_id: "c1", name: "Akram", relatie_code: "40" });
+    const body = await res.json();
+    expect(body.found).toBe(true);
+    expect(body.client_id).toBe("c1");
+  });
+
+  it("returns the full client object without leaking whatsapp_phone", async () => {
+    mockSupabase._table("clients")._setResult({ data: [clientRow()], error: null });
+    mockSupabase._table("customers")._setResult({ data: [], error: null });
+    const body = await (await byWhatsapp(getReq(url("31612345678")))).json();
+    expect(Object.keys(body.client).sort()).toEqual([
+      "address", "btw_number", "city", "email", "iban", "id", "kvk_number",
+      "name", "phone_number", "postcode", "relatie_code",
+    ]);
+    expect(body.client.kvk_number).toBe("12345678");
+    expect(body.client).not.toHaveProperty("whatsapp_phone");
+  });
+
+  it("keeps the top-level client_id / name / relatie_code the n8n node reads", async () => {
+    mockSupabase._table("clients")._setResult({ data: [clientRow()], error: null });
+    mockSupabase._table("customers")._setResult({ data: [], error: null });
+    const body = await (await byWhatsapp(getReq(url("31612345678")))).json();
+    expect(body.client_id).toBe("c1");
+    expect(body.name).toBe("Akram");
+    expect(body.relatie_code).toBe("40");
+  });
+
+  it("returns the client's active customers, ordered by name", async () => {
+    mockSupabase._table("clients")._setResult({ data: [clientRow()], error: null });
+    const cust = mockSupabase._table("customers");
+    cust._setResult({
+      data: [{
+        id: "cu1", name: "Albert Heijn", address: "Hoofdweg 1", postcode: "1000 AA",
+        city: "Amsterdam", btw_number: "NL5", kvk: "87654321", relatie_code: "7", btw_rate: 9,
+        btw_verlegd: false, pricing_model: "per_uur", default_rate: 32.5,
+        payment_days: 14, aliases: ["AH"], message_pattern: null,
+      }],
+      error: null,
+    });
+    const body = await (await byWhatsapp(getReq(url("31612345678")))).json();
+    expect(body.customers).toHaveLength(1);
+    expect(body.customers[0]).toMatchObject({ id: "cu1", kvk: "87654321", btw_rate: 9, payment_days: 14, aliases: ["AH"] });
+
+    const calls = cust._calls as { method: string; args: unknown[] }[];
+    expect(calls.find((c) => c.method === "eq" && c.args[0] === "client_id")!.args[1]).toBe("c1");
+    expect(calls.find((c) => c.method === "eq" && c.args[0] === "active")!.args[1]).toBe(true);
+    expect(calls.find((c) => c.method === "order")!.args).toEqual(["name", { ascending: true }]);
+    // customers.kvk, NOT kvk_number — the two tables name this column differently.
+    const select = calls.find((c) => c.method === "select")!.args[0] as string;
+    expect(select).toContain("kvk,");
+    expect(select).not.toContain("kvk_number");
+    expect(select).toContain("btw_verlegd");
+    expect(select).toContain("message_pattern");
+  });
+
+  it("500s when the customer lookup fails instead of reporting no customers", async () => {
+    mockSupabase._table("clients")._setResult({ data: [clientRow()], error: null });
+    mockSupabase._table("customers")._setResult({ data: null, error: { message: "boom" } });
+    const res = await byWhatsapp(getReq(url("31612345678")));
+    expect(res.status).toBe(500);
   });
 
   it("falls back to phone_number when whatsapp_phone is unset", async () => {
     mockSupabase._table("clients")._setResult({
-      data: [{ id: "c2", name: "Buki", relatie_code: null, whatsapp_phone: null, phone_number: "+31612345678" }],
+      data: [clientRow({ id: "c2", name: "Buki", relatie_code: null, whatsapp_phone: null, phone_number: "+31612345678" })],
       error: null,
     });
+    mockSupabase._table("customers")._setResult({ data: [], error: null });
     const body = await (await byWhatsapp(getReq(url("31612345678")))).json();
-    expect(body).toEqual({ found: true, client_id: "c2", name: "Buki", relatie_code: null });
+    expect(body.client_id).toBe("c2");
+    expect(body.relatie_code).toBeNull();
   });
 
   it("prefers the whatsapp_phone match over a phone_number match", async () => {
