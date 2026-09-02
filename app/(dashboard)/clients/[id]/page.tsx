@@ -6,8 +6,11 @@ import { useParams, usePathname, useRouter, useSearchParams } from "next/navigat
 import { Icon, I } from "@/app/components/Icon";
 import { useToast } from "@/app/components/Toast";
 import { formatAliases, parseAliases } from "@/lib/aliases";
+import { formatNL } from "@/lib/billing";
 import { BTW_RATES, PRICING_MODELS } from "@/lib/types";
 import type { CustomerExtras, PricingModel, Supplier } from "@/lib/types";
+import { DEFAULT_DAYS_PER_WEEK, effectiveHourlyRate } from "@/lib/workforce/domain";
+import type { Employee } from "@/lib/workforce/domain";
 
 type Client = {
   id: string;
@@ -25,17 +28,24 @@ type Client = {
   aliases: string[] | null;
   relatie_code: string | null;
   notes: string | null;
+  /** Default pay rate inherited by employees without their own override. */
+  default_hourly_rate: number | null;
   created_at: string;
 };
 
-// `aliases` is a text[] on the client record but a comma-separated string in
-// the form — see lib/aliases.
-type ClientForm = Omit<Client, "id" | "created_at" | "aliases"> & { aliases: string };
+// Two columns are edited as text and stored as something else: `aliases` is a
+// text[] (comma-separated in the input — see lib/aliases) and
+// `default_hourly_rate` is a nullable numeric kept as a string so the box can
+// be left empty.
+type ClientForm = Omit<Client, "id" | "created_at" | "aliases" | "default_hourly_rate"> & {
+  aliases: string;
+  default_hourly_rate: string;
+};
 
 const emptyClientForm: ClientForm = {
   name: "", phone_number: "", whatsapp_phone: "", email: "", address: "",
   postcode: "", city: "", country: "NL", btw_number: "", kvk_number: "",
-  iban: "", aliases: "", relatie_code: "", notes: "",
+  iban: "", aliases: "", relatie_code: "", notes: "", default_hourly_rate: "",
 };
 
 // Suppliers (Leveranciers) and Customers (Klanten) share an identical record
@@ -83,8 +93,21 @@ const KINDS: Record<Kind, KindConfig> = {
   },
 };
 
-function kindFromTab(tab: string | null): Kind {
-  return tab === "klanten" ? "customer" : "supplier";
+// Employees (workers the client PAYS) are not counterparties — they share the
+// tab bar but nothing else, so the tab union is wider than Kind.
+type Tab = Kind | "employee";
+
+const EMPLOYEE_TAB = { tab: "employees", tabLabel: "Employees" } as const;
+const TAB_ORDER: Tab[] = ["supplier", "customer", "employee"];
+
+function tabConfig(tab: Tab): { tab: string; tabLabel: string } {
+  return tab === "employee" ? EMPLOYEE_TAB : KINDS[tab];
+}
+
+function tabFromParam(param: string | null): Tab {
+  if (param === "klanten") return "customer";
+  if (param === EMPLOYEE_TAB.tab) return "employee";
+  return "supplier";
 }
 
 // The form mirrors the record except for the two fields the DOM edits as text:
@@ -629,6 +652,268 @@ function ImportCounterpartiesModal({ clientId, kind, open, onClose, onImported }
   );
 }
 
+/* ── Inline table-cell editor ───────────────────────────────────── */
+
+interface InlineEditProps {
+  value: string;
+  /** Return false to reject the edit — the cell snaps back to `value`. */
+  onCommit: (next: string) => boolean;
+  ariaLabel: string;
+  type?: string;
+  step?: string;
+  min?: string;
+  max?: string;
+  placeholder?: string;
+  className?: string;
+  style?: React.CSSProperties;
+}
+
+/**
+ * One editable table cell. Keeps a local draft so typing doesn't fire a request
+ * per keystroke, and commits on blur or Enter; Escape abandons the draft.
+ *
+ * `value` is the stored value: when the optimistic update lands (or is reverted)
+ * the draft resyncs from it, which is also how a rejected edit snaps back.
+ */
+function InlineEdit({ value, onCommit, ariaLabel, type, step, min, max, placeholder, className, style }: InlineEditProps) {
+  const [draft, setDraft] = useState(value);
+  const abandon = useRef(false);
+
+  useEffect(() => { setDraft(value); }, [value]);
+
+  return (
+    <input
+      className={`cell-input${className ? ` ${className}` : ""}`}
+      aria-label={ariaLabel}
+      type={type ?? "text"}
+      step={step}
+      min={min}
+      max={max}
+      placeholder={placeholder}
+      value={draft}
+      style={style}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => {
+        if (abandon.current) { abandon.current = false; setDraft(value); return; }
+        if (draft === value) return;
+        if (!onCommit(draft)) setDraft(value);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+        else if (e.key === "Escape") { abandon.current = true; e.currentTarget.blur(); }
+      }}
+    />
+  );
+}
+
+/* ── Add-employee drawer ────────────────────────────────────────── */
+
+// `hourly_rate` is a nullable numeric edited as a string so the box can be left
+// empty — empty means "inherit the client's default rate", not zero.
+type EmployeeForm = {
+  name: string;
+  phone: string;
+  hourly_rate: string;
+  default_days_per_week: number;
+  active: boolean;
+  notes: string;
+};
+
+function emptyEmployeeForm(): EmployeeForm {
+  return {
+    name: "", phone: "", hourly_rate: "",
+    default_days_per_week: DEFAULT_DAYS_PER_WEEK, active: true, notes: "",
+  };
+}
+
+interface EmployeeModalProps {
+  clientId: string;
+  clientDefaultRate: number | null;
+  open: boolean;
+  onClose: () => void;
+  onSaved: (e: Employee) => void;
+}
+
+// Add only. Editing an existing employee happens inline in the table, so this
+// drawer has no PATCH path.
+function EmployeeModal({ clientId, clientDefaultRate, open, onClose, onSaved }: EmployeeModalProps) {
+  const { toast } = useToast();
+  const [form, setForm] = useState<EmployeeForm>(() => emptyEmployeeForm());
+  const [loading, setLoading] = useState(false);
+  const [errors, setErrors] = useState<Partial<Record<keyof EmployeeForm, string>>>({});
+
+  useEffect(() => {
+    if (open) {
+      setForm(emptyEmployeeForm());
+      setErrors({});
+    }
+  }, [open]);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === "Escape" && open) onClose(); }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  function validate(): boolean {
+    const e: typeof errors = {};
+    if (!form.name.trim()) e.name = "Name is required";
+    if (form.hourly_rate.trim() !== "" && !(Number(form.hourly_rate) >= 0)) {
+      e.hourly_rate = "Rate must be a positive number";
+    }
+    setErrors(e);
+    return Object.keys(e).length === 0;
+  }
+
+  async function handleSave() {
+    if (!validate()) return;
+    setLoading(true);
+    try {
+      const payload = {
+        name:  form.name,
+        phone: form.phone || null,
+        // Empty clears the override so the client's default applies again.
+        hourly_rate: form.hourly_rate.trim() === "" ? null : Number(form.hourly_rate),
+        default_days_per_week: Number(form.default_days_per_week ?? DEFAULT_DAYS_PER_WEEK),
+        active: form.active,
+        notes: form.notes || null,
+      };
+      const saved = await apiJson<Employee>(`/api/clients/${clientId}/employees`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      toast("Employee added", "success");
+      onSaved(saved);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Save failed", "error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  if (!open) return null;
+
+  const inheritedHint = clientDefaultRate == null
+    ? "Leave empty to inherit the client's default rate (none set yet)"
+    : `Leave empty to inherit the client's default of € ${formatNL(clientDefaultRate)}`;
+
+  return (
+    <>
+      <div className="drawer-bg on" onClick={onClose} aria-hidden="true" />
+      <aside
+        className="drawer on"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Add employee"
+      >
+        <div className="dr-head">
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <h3>Add employee</h3>
+            <div className="dr-sub">Rates, days and status can be edited inline afterwards</div>
+          </div>
+          <button className="iconbtn" onClick={onClose} aria-label="Close"><Icon d={I.x} size={14} /></button>
+        </div>
+
+        <div className="dr-body">
+          <div className="form-group">
+            <label className="form-label" htmlFor="ef-name">Name<span className="req"> *</span></label>
+            <input
+              id="ef-name"
+              className={`form-input${errors.name ? " error" : ""}`}
+              value={form.name}
+              placeholder="Jan de Vries"
+              onChange={(e) => {
+                const v = e.target.value;
+                setForm((f) => ({ ...f, name: v }));
+                setErrors((er) => { const n = { ...er }; delete n.name; return n; });
+              }}
+            />
+            {errors.name && <div className="form-error">{errors.name}</div>}
+          </div>
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="ef-phone">Phone</label>
+            <input
+              id="ef-phone"
+              className="form-input"
+              value={form.phone}
+              placeholder="+31 6 12 34 56 78"
+              onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
+            />
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div className="form-group">
+              <label className="form-label" htmlFor="ef-hourly_rate">Hourly rate</label>
+              <div className="form-hint">{inheritedHint}</div>
+              <input
+                id="ef-hourly_rate"
+                className={`form-input${errors.hourly_rate ? " error" : ""}`}
+                type="number"
+                step="0.01"
+                min="0"
+                value={form.hourly_rate}
+                placeholder="Inherited"
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setForm((f) => ({ ...f, hourly_rate: v }));
+                  setErrors((er) => { const n = { ...er }; delete n.hourly_rate; return n; });
+                }}
+              />
+              {errors.hourly_rate && <div className="form-error">{errors.hourly_rate}</div>}
+            </div>
+
+            <div className="form-group">
+              <label className="form-label" htmlFor="ef-days">Days per week</label>
+              <div className="form-hint">Default used when generating a schedule</div>
+              <input
+                id="ef-days"
+                className="form-input"
+                type="number"
+                min="0"
+                max="7"
+                value={form.default_days_per_week}
+                onChange={(e) => setForm((f) => ({
+                  ...f,
+                  default_days_per_week: e.target.value === "" ? 0 : Number(e.target.value),
+                }))}
+              />
+            </div>
+          </div>
+
+          <label className="form-group" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input
+              type="checkbox"
+              checked={form.active}
+              onChange={(e) => setForm((f) => ({ ...f, active: e.target.checked }))}
+            />
+            <span>Active</span>
+          </label>
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="ef-notes">Notes</label>
+            <textarea
+              id="ef-notes"
+              className="form-input"
+              rows={3}
+              value={form.notes}
+              onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
+            />
+          </div>
+        </div>
+
+        <div className="dr-foot">
+          <button className="btn" onClick={onClose} disabled={loading}>Cancel</button>
+          <button className="btn primary" onClick={handleSave} disabled={loading}>
+            {loading ? <><span className="spinner-sm" /> Saving…</> : <><Icon d={I.check} size={13} /> Add employee</>}
+          </button>
+        </div>
+      </aside>
+    </>
+  );
+}
+
 /* ── Client detail page ──────────────────────────────────────────── */
 
 function ClientDetailView() {
@@ -640,9 +925,13 @@ function ClientDetailView() {
   const clientId = params.id;
 
   // Active tab is driven by the ?tab query param so it deep-links and the
-  // browser back button works. Anything other than "klanten" → Leveranciers.
-  const activeTab: Kind = kindFromTab(searchParams.get("tab"));
-  const cfg = KINDS[activeTab];
+  // browser back button works. Anything unrecognised → Leveranciers.
+  const activeTab: Tab = tabFromParam(searchParams.get("tab"));
+  const isEmployeeTab = activeTab === "employee";
+  // The counterparty section isn't rendered on the Employees tab, so `cpKind`
+  // (and everything derived from it) is only read for the other two.
+  const cpKind: Kind = isEmployeeTab ? "supplier" : activeTab;
+  const cfg = KINDS[cpKind];
 
   const [client, setClient]     = useState<Client | null>(null);
   const [form, setForm]         = useState<ClientForm>(emptyClientForm);
@@ -650,17 +939,23 @@ function ClientDetailView() {
   const [saving, setSaving]     = useState(false);
   const [suppliers, setSuppliers] = useState<Counterparty[]>([]);
   const [customers, setCustomers] = useState<Counterparty[]>([]);
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [addEmployeeOpen, setAddEmployeeOpen] = useState(false);
   const [modal, setModal] = useState<{ open: boolean; kind: Kind; editing: Counterparty | null }>({ open: false, kind: "supplier", editing: null });
   const [importState, setImportState] = useState<{ open: boolean; kind: Kind }>({ open: false, kind: "supplier" });
 
-  const list = activeTab === "customer" ? customers : suppliers;
-  const setList = activeTab === "customer" ? setCustomers : setSuppliers;
+  const list = cpKind === "customer" ? customers : suppliers;
+  const setList = cpKind === "customer" ? setCustomers : setSuppliers;
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       // Both arrays come nested in the client GET — no extra round-trips.
-      const c = await apiJson<Client & { suppliers?: Counterparty[]; customers?: Counterparty[] }>(`/api/clients/${clientId}`);
+      const c = await apiJson<Client & {
+        suppliers?: Counterparty[];
+        customers?: Counterparty[];
+        employees?: Employee[];
+      }>(`/api/clients/${clientId}`);
       setClient(c);
       setForm({
         name: c.name,
@@ -677,9 +972,11 @@ function ClientDetailView() {
         aliases: formatAliases(c.aliases),
         relatie_code: c.relatie_code ?? "",
         notes: c.notes ?? "",
+        default_hourly_rate: c.default_hourly_rate == null ? "" : String(c.default_hourly_rate),
       });
       setSuppliers(c.suppliers ?? []);
       setCustomers(c.customers ?? []);
+      setEmployees(c.employees ?? []);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Could not load client", "error");
     } finally {
@@ -689,9 +986,9 @@ function ClientDetailView() {
 
   useEffect(() => { load(); }, [load]);
 
-  function selectTab(kind: Kind) {
-    if (kind === activeTab) return;
-    router.push(`${pathname}?tab=${KINDS[kind].tab}`, { scroll: false });
+  function selectTab(tab: Tab) {
+    if (tab === activeTab) return;
+    router.push(`${pathname}?tab=${tabConfig(tab).tab}`, { scroll: false });
   }
 
   async function saveClient() {
@@ -716,6 +1013,8 @@ function ClientDetailView() {
         aliases:        parseAliases(form.aliases),
         relatie_code:   form.relatie_code || null,
         notes:          form.notes || null,
+        // Empty box clears the rate; employees then have nothing to inherit.
+        default_hourly_rate: form.default_hourly_rate.trim() === "" ? null : Number(form.default_hourly_rate),
       };
       const saved = await apiJson<Client>(`/api/clients/${clientId}`, {
         method: "PATCH",
@@ -731,8 +1030,9 @@ function ClientDetailView() {
     }
   }
 
-  function openAdd() { setModal({ open: true, kind: activeTab, editing: null }); }
-  function openEdit(s: Counterparty) { setModal({ open: true, kind: activeTab, editing: s }); }
+  // Only reachable from the counterparty tabs, so cpKind is the real kind.
+  function openAdd() { setModal({ open: true, kind: cpKind, editing: null }); }
+  function openEdit(s: Counterparty) { setModal({ open: true, kind: cpKind, editing: s }); }
   function closeModal() { setModal((m) => ({ ...m, open: false, editing: null })); }
 
   function onSaved(s: Counterparty, isNew: boolean) {
@@ -756,7 +1056,80 @@ function ClientDetailView() {
     }
   }
 
-  function field(key: keyof ClientForm, label: string, opts?: { placeholder?: string; type?: string; hint?: string }) {
+  function onEmployeeAdded(e: Employee) {
+    setEmployees((prev) => [...prev, e].sort((a, b) => a.name.localeCompare(b.name)));
+    setAddEmployeeOpen(false);
+  }
+
+  /**
+   * Inline edits apply locally first and revert if the PATCH fails, so a row
+   * never waits on a round-trip — the same optimistic pattern the Tasks page
+   * uses. The response replaces the row, which also refreshes the server's
+   * resolved `effective_hourly_rate`.
+   */
+  async function patchEmployee(target: Employee, patch: Partial<Employee>) {
+    const before = target;
+    setEmployees((prev) => prev.map((e) => (e.id === target.id ? { ...e, ...patch } : e)));
+    try {
+      const saved = await apiJson<Employee>(`/api/clients/${clientId}/employees/${target.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      setEmployees((prev) => prev.map((e) => (e.id === target.id ? saved : e)));
+    } catch (err) {
+      setEmployees((prev) => prev.map((e) => (e.id === target.id ? before : e)));
+      toast(err instanceof Error ? err.message : "Update failed", "error");
+    }
+  }
+
+  // Each commit validates before touching the network and returns false to make
+  // the cell snap back, so an invalid draft never reaches the API.
+  function commitName(e: Employee, raw: string): boolean {
+    const name = raw.trim();
+    if (!name) { toast("Name is required", "error"); return false; }
+    patchEmployee(e, { name });
+    return true;
+  }
+
+  function commitText(e: Employee, key: "phone" | "notes", raw: string): boolean {
+    patchEmployee(e, { [key]: raw.trim() || null } as Partial<Employee>);
+    return true;
+  }
+
+  function commitRate(e: Employee, raw: string): boolean {
+    const text = raw.trim();
+    // Empty clears the override — the client's default applies again.
+    if (text === "") { patchEmployee(e, { hourly_rate: null }); return true; }
+    const rate = Number(text);
+    if (!Number.isFinite(rate) || rate < 0) { toast("Rate must be a positive number", "error"); return false; }
+    patchEmployee(e, { hourly_rate: rate });
+    return true;
+  }
+
+  function commitDays(e: Employee, raw: string): boolean {
+    const days = Number(raw.trim());
+    if (!Number.isInteger(days) || days < 0 || days > 7) {
+      toast("Days per week must be a whole number from 0 to 7", "error");
+      return false;
+    }
+    patchEmployee(e, { default_days_per_week: days });
+    return true;
+  }
+
+  async function deleteEmployee(e: Employee) {
+    if (!confirm(`Delete employee "${e.name}"? This cannot be undone.`)) return;
+    try {
+      const res = await fetch(`/api/clients/${clientId}/employees/${e.id}`, { method: "DELETE" });
+      if (!res.ok && res.status !== 204) throw new Error(`Delete failed (${res.status})`);
+      setEmployees((prev) => prev.filter((x) => x.id !== e.id));
+      toast(`${e.name} deleted`, "success");
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Delete failed", "error");
+    }
+  }
+
+  function field(key: keyof ClientForm, label: string, opts?: { placeholder?: string; type?: string; hint?: string; step?: string }) {
     return (
       <div className="form-group">
         <label className="form-label" htmlFor={`cf-${key}`}>{label}</label>
@@ -765,6 +1138,7 @@ function ClientDetailView() {
           id={`cf-${key}`}
           className="form-input"
           type={opts?.type ?? "text"}
+          step={opts?.step}
           value={(form[key] as string) ?? ""}
           placeholder={opts?.placeholder}
           onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
@@ -844,7 +1218,15 @@ function ClientDetailView() {
           {field("kvk_number", "KvK number")}
         </div>
 
-        {field("iban", "IBAN", { placeholder: "NL00 BANK 0123 4567 89" })}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          {field("iban", "IBAN", { placeholder: "NL00 BANK 0123 4567 89" })}
+          {field("default_hourly_rate", "Default hourly rate", {
+            type: "number",
+            step: "0.01",
+            placeholder: "0.00",
+            hint: "Inherited by every employee without their own rate",
+          })}
+        </div>
 
         {field("address", "Address")}
 
@@ -869,9 +1251,9 @@ function ClientDetailView() {
       {/* Counterparties section — tabbed: Leveranciers / Klanten */}
       <section className="card" style={{ padding: 20 }}>
         <div className="cp-tabs" role="tablist" aria-label="Counterparties" style={{ display: "flex", gap: 4, borderBottom: "1px solid var(--line)", marginBottom: 16 }}>
-          {(["supplier", "customer"] as Kind[]).map((k) => {
-            const kc = KINDS[k];
-            const count = k === "customer" ? customers.length : suppliers.length;
+          {TAB_ORDER.map((k) => {
+            const kc = tabConfig(k);
+            const count = k === "employee" ? employees.length : k === "customer" ? customers.length : suppliers.length;
             const isActive = k === activeTab;
             return (
               <button
@@ -899,12 +1281,13 @@ function ClientDetailView() {
           })}
         </div>
 
+        {!isEmployeeTab && (<>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
           <div className="sub" style={{ fontSize: 12 }}>
             {list.length} {cfg.singular}{list.length === 1 ? "" : "s"}
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            <button className="btn" onClick={() => setImportState({ open: true, kind: activeTab })} title={cfg.importTitle}>
+            <button className="btn" onClick={() => setImportState({ open: true, kind: cpKind })} title={cfg.importTitle}>
               <Icon d={I.excel} size={13} /> Import Excel
             </button>
             <button className="btn primary" onClick={openAdd}>
@@ -953,6 +1336,133 @@ function ClientDetailView() {
             </table>
           </div>
         )}
+        </>)}
+
+        {isEmployeeTab && (<>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <div className="sub" style={{ fontSize: 12 }}>
+            {employees.length} employee{employees.length === 1 ? "" : "s"}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            {/* Phase 2. The generator itself is an interface with no
+                implementation yet (lib/workforce/domain/schedule-generator.ts). */}
+            <button className="btn" disabled title="Coming soon — schedule generation ships in a later phase">
+              <Icon d={I.calendar} size={13} /> Generate monthly schedule
+            </button>
+            <button className="btn primary" onClick={() => setAddEmployeeOpen(true)}>
+              <Icon d={I.users} size={13} /> Add employee
+            </button>
+          </div>
+        </div>
+
+        {employees.length === 0 ? (
+          <div className="t-empty" style={{ padding: 24 }}>
+            No employees yet. Add the workers this client pays.
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table className="t" style={{ width: "100%" }}>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th style={{ width: 210 }}>Hourly rate</th>
+                  <th style={{ width: 105 }}>Days/week</th>
+                  <th style={{ width: 220 }}>Notes</th>
+                  <th style={{ width: 125 }}>Status</th>
+                  <th style={{ width: 50 }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {employees.map((e) => {
+                  // Resolved against the client's saved default, so the badge
+                  // updates as soon as either side is edited.
+                  const eff = effectiveHourlyRate(e, client.default_hourly_rate);
+                  return (
+                    <tr key={e.id}>
+                      <td>
+                        <InlineEdit
+                          value={e.name}
+                          onCommit={(v) => commitName(e, v)}
+                          ariaLabel={`Name of ${e.name}`}
+                          style={{ fontWeight: 500 }}
+                        />
+                        <InlineEdit
+                          value={e.phone ?? ""}
+                          onCommit={(v) => commitText(e, "phone", v)}
+                          ariaLabel={`Phone of ${e.name}`}
+                          placeholder="Add phone"
+                          className="sub"
+                        />
+                      </td>
+                      <td>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <InlineEdit
+                            value={e.hourly_rate == null ? "" : String(e.hourly_rate)}
+                            onCommit={(v) => commitRate(e, v)}
+                            ariaLabel={`Hourly rate of ${e.name}`}
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            // Empty shows what it inherits, so the blank box reads
+                            // as "using the client rate" rather than "no rate".
+                            placeholder={client.default_hourly_rate == null ? "—" : formatNL(client.default_hourly_rate)}
+                            style={{ width: 82, flexShrink: 0 }}
+                          />
+                          {eff.source === "employee" ? (
+                            <span className="pill s-info"><span className="pill-dot" />override</span>
+                          ) : eff.source === "client" ? (
+                            <span className="pill s-good"><span className="pill-dot" />inherited</span>
+                          ) : (
+                            <span className="pill s-warn"><span className="pill-dot" />no rate</span>
+                          )}
+                        </div>
+                      </td>
+                      <td>
+                        <InlineEdit
+                          value={String(e.default_days_per_week)}
+                          onCommit={(v) => commitDays(e, v)}
+                          ariaLabel={`Days per week of ${e.name}`}
+                          type="number"
+                          min="0"
+                          max="7"
+                          style={{ width: 56 }}
+                        />
+                      </td>
+                      <td>
+                        <InlineEdit
+                          value={e.notes ?? ""}
+                          onCommit={(v) => commitText(e, "notes", v)}
+                          ariaLabel={`Notes for ${e.name}`}
+                          placeholder="Add a note"
+                          className="sub"
+                        />
+                      </td>
+                      <td>
+                        <span className={`pill-sel s-${e.active ? "good" : "danger"}`}>
+                          <select
+                            value={e.active ? "active" : "inactive"}
+                            onChange={(ev) => patchEmployee(e, { active: ev.target.value === "active" })}
+                            aria-label={`Status of ${e.name}`}
+                          >
+                            <option value="active">active</option>
+                            <option value="inactive">inactive</option>
+                          </select>
+                          <span className="pill-chev"><Icon d={I.chev} size={11} stroke={2.2} /></span>
+                        </span>
+                      </td>
+                      <td style={{ textAlign: "right" }}>
+                        <button className="act" title="Delete" onClick={() => deleteEmployee(e)}>
+                          <Icon d={I.trash} size={14} />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        </>)}
       </section>
 
       <CounterpartyModal
@@ -962,6 +1472,14 @@ function ClientDetailView() {
         open={modal.open}
         onClose={closeModal}
         onSaved={onSaved}
+      />
+
+      <EmployeeModal
+        clientId={clientId}
+        clientDefaultRate={client.default_hourly_rate}
+        open={addEmployeeOpen}
+        onClose={() => setAddEmployeeOpen(false)}
+        onSaved={onEmployeeAdded}
       />
 
       <ImportCounterpartiesModal

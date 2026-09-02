@@ -419,7 +419,76 @@ this is intentional, do not change it.
   `004` invoice billing fields, `005` customers table + invoices.customer_id,
   `006` invoices.customer_name (verkoop counterparty denormalisation),
   `007` invoices.export_count + last_exported_at + `increment_invoice_exports`,
-  `008` document_templates, `009` tasks (see "Tasks + Telegram reminders").
+  `008` document_templates, `009` tasks (see "Tasks + Telegram reminders"),
+  `010` clients.postcode + rsin, `011` employees + scheduling (see "Employees").
+
+### Employees + salary scheduling (Phase 1)
+
+A client's third kind of related party (not a counterparty — they never
+appear in an export): **employees**, the workers it PAYS. Suppliers = buys
+from, customers = sells to, employees = pays. Phase 1 is data model + CRUD +
+UI only. **There is deliberately no schedule-generation algorithm** — Phase 2
+implements the `ScheduleGenerator` interface and nothing else has to move.
+
+- **DB:** migration `011_employees_and_scheduling.sql` — `clients.default_hourly_rate`,
+  plus tables `employees`, `client_schedule_rules`, `public_holidays` and
+  `employee_monthly_schedules`. Run it in the Supabase SQL editor before using
+  the Employees tab. Money columns are `numeric(15, 2)` with a non-negative
+  check, matching `invoices.total_amount`.
+- **Rate inheritance:** `employees.hourly_rate` is an OVERRIDE; `null` means
+  "inherit `clients.default_hourly_rate`". `effectiveHourlyRate()` resolves the
+  pair and returns a `source` (`employee` | `client` | `none`) that the table
+  renders as an override/inherited badge. A `0` override is a real rate, not
+  "unset" — only null falls through.
+- **Layering** (`lib/workforce/`, the only layered module in this repo — the
+  rest of `lib/` is flat):
+  - `domain/` — entities, rules and repository **ports**; no Supabase, no
+    Next.js, no zod. `schedule-generator.ts` is the Phase 2 seam: an interface
+    with **no implementation**.
+  - `application/` — use cases (`employee-use-cases.ts`,
+    `schedule-rules-use-cases.ts`, `generate-monthly-schedule.ts`) + the zod
+    request schemas. `generate-monthly-schedule.ts` is wiring only: it depends
+    on the `ScheduleGenerator` interface and never on employee CRUD, so Phase 2
+    lands the algorithm without touching it. Nothing calls it yet.
+  - `infrastructure/` — the Supabase-backed repositories. The only layer that
+    knows table names.
+  Routes are thin shells: validate, call a use case, map `toHttpError` →
+  `jsonError`.
+- **Public holidays** are stored per DATE, not as weekday rules — Goede Vrijdag /
+  Pasen / Hemelvaart / Pinksteren are Easter-derived and Koningsdag shifts to
+  26 April when the 27th is a Sunday. Dates are COMPUTED by the pure
+  `dutchPublicHolidays(year)` (Gregorian computus, no dependency) and seeded
+  with `npx tsx scripts/seed-public-holidays.ts 2026 2027` (`--dry` to preview).
+  Deliberately not a runtime holiday API — that would add a network failure mode
+  to a serverless path for a calculation that hasn't changed since 1583.
+- **Schedule rules** are per client (`client_schedule_rules`, `client_id` is the
+  PK). Defaults — 4 continuous hours, 30-minute break, 10-hour daily cap — live
+  in `DEFAULT_SCHEDULE_RULES` **and** as column defaults; keep the two in sync.
+  A client with no row reads the defaults instead of a 404.
+
+| Route | Purpose |
+|---|---|
+| `GET/POST /api/clients/:id/employees` | list (`?active=1`) / create |
+| `GET/PATCH/DELETE /api/clients/:id/employees/:employeeId` | read / update / delete |
+| `GET/PUT /api/clients/:id/schedule-rules` | read (defaults when unsaved) / replace |
+
+`PATCH` with exactly `{ "active": false }` routes through the **deactivate** use
+case — the row is kept because past schedules reference it. `GET /api/clients/:id`
+now also nests `employees` alongside `suppliers` / `customers`.
+
+**The employees table edits in place** — unlike the Leveranciers / Klanten tabs,
+which open a drawer. Every column is a live control (`<InlineEdit>` for name,
+phone, rate, days/week and notes; a `.pill-sel` dropdown for active/inactive) and
+each commit is an **optimistic** PATCH that reverts the row on failure, the same
+pattern as the Tasks page. The drawer is **add-only** and has no PATCH path;
+don't reintroduce an edit drawer alongside it. Notes:
+- `InlineEdit` keeps a local draft so typing doesn't fire a request per
+  keystroke: it commits on blur/Enter, abandons on Escape, and skips the request
+  entirely when the value is unchanged. `onCommit` returning `false` rejects the
+  edit and snaps the cell back, which is how invalid input (empty name, negative
+  rate, days outside 0–7) never reaches the API.
+- An empty rate box means "inherit"; it PATCHes `hourly_rate: null` and the
+  placeholder shows the client default it falls back to.
 
 ### Tasks + Telegram reminders
 
