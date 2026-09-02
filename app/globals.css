@@ -314,6 +314,14 @@ a.nav-item { text-decoration: none; display: flex; }
 .form-input.error { border-color: var(--danger); }
 .form-input.error:focus { box-shadow: 0 0 0 2px var(--danger-soft); }
 .form-error { font-size: 11px; color: var(--danger); }
+
+/* Inline table-cell editing (Employees). Reads as plain text until hovered or
+   focused, so a table of live inputs doesn't look like a form. */
+.cell-input { display: block; width: 100%; padding: 4px 7px; border: 1px solid transparent; border-radius: var(--r-sm); background: transparent; color: inherit; font: inherit; font-size: 13px; transition: border-color .12s, background .12s, box-shadow .12s; }
+.cell-input:hover { border-color: var(--line); background: var(--surface); }
+.cell-input:focus { outline: none; border-color: var(--accent-line); background: var(--surface); box-shadow: 0 0 0 2px var(--accent-soft); }
+.cell-input::placeholder { color: var(--faint); }
+.cell-input.sub { font-size: 12px; color: var(--muted); }
 .notice-error { display: flex; align-items: center; gap: 8px; padding: 11px 14px; border: 1px solid var(--danger-soft); background: var(--danger-soft); color: var(--danger); border-radius: var(--r-md); font-size: 13px; margin-bottom: 18px; }
 
 /* ── File drop ── */

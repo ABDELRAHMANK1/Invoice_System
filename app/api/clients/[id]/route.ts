@@ -3,6 +3,7 @@ import { z } from "zod";
 import { aliasesSchema, aliasesPatch } from "@/lib/aliases";
 import { jsonError, requireInternalApiKey } from "@/lib/http";
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import { clientDefaultHourlyRateField } from "@/lib/workforce/application/employee-schema";
 
 export const runtime = "nodejs";
 
@@ -22,6 +23,9 @@ const patchSchema = z.object({
   aliases:        aliasesSchema,
   relatie_code:   z.string().max(50).optional().nullable(),
   notes:          z.string().max(2000).optional().nullable(),
+  // The default pay rate every employee without an override inherits (see
+  // lib/workforce). Validated by the same field the employees API uses.
+  ...clientDefaultHourlyRateField,
 });
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -37,10 +41,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
   if (error) return jsonError(error.code === "PGRST116" ? "Client not found" : error.message, error.code === "PGRST116" ? 404 : 500);
 
-  // Nest the client's own suppliers (Leveranciers) and customers (Klanten) so
-  // the New-invoice modal and the client-detail tabs can populate from a single
-  // fetch. Active first, then by name.
-  const [{ data: suppliers }, { data: customers }] = await Promise.all([
+  // Nest the client's own suppliers (Leveranciers), customers (Klanten) and
+  // employees so the New-invoice modal and the client-detail tabs can populate
+  // from a single fetch. Active first, then by name.
+  const [{ data: suppliers }, { data: customers }, { data: employees }] = await Promise.all([
     supabaseAdmin
       .from("suppliers")
       .select("*")
@@ -53,9 +57,20 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       .eq("client_id", id)
       .order("active", { ascending: false })
       .order("name", { ascending: true }),
+    supabaseAdmin
+      .from("employees")
+      .select("*")
+      .eq("client_id", id)
+      .order("active", { ascending: false })
+      .order("name", { ascending: true }),
   ]);
 
-  return NextResponse.json({ ...data, suppliers: suppliers ?? [], customers: customers ?? [] });
+  return NextResponse.json({
+    ...data,
+    suppliers: suppliers ?? [],
+    customers: customers ?? [],
+    employees: employees ?? [],
+  });
 }
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
