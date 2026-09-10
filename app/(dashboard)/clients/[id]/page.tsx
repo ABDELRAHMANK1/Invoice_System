@@ -6,6 +6,7 @@ import { useParams, usePathname, useRouter, useSearchParams } from "next/navigat
 import { Icon, I } from "@/app/components/Icon";
 import ScheduleModal from "@/app/components/ScheduleModal";
 import { useToast } from "@/app/components/Toast";
+import { ConfirmDialog } from "@/app/components/ConfirmDialog";
 import { formatAliases, parseAliases } from "@/lib/aliases";
 import { formatNL } from "@/lib/billing";
 import { BTW_RATES, PRICING_MODELS } from "@/lib/types";
@@ -992,6 +993,10 @@ function ClientDetailView() {
   const [scheduleFor, setScheduleFor] = useState<{ open: boolean; employeeId: string | null }>({ open: false, employeeId: null });
   const [modal, setModal] = useState<{ open: boolean; kind: Kind; editing: Counterparty | null }>({ open: false, kind: "supplier", editing: null });
   const [importState, setImportState] = useState<{ open: boolean; kind: Kind }>({ open: false, kind: "supplier" });
+  // Destructive actions are gated on a rendered dialog, never window.confirm().
+  const [confirmCp, setConfirmCp] = useState<Counterparty | null>(null);
+  const [confirmEmp, setConfirmEmp] = useState<Employee | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const list = cpKind === "customer" ? customers : suppliers;
   const setList = cpKind === "customer" ? setCustomers : setSuppliers;
@@ -1103,14 +1108,17 @@ function ClientDetailView() {
   }
 
   async function deleteRecord(s: Counterparty) {
-    if (!confirm(`Delete ${cfg.singular} "${s.name}"? This cannot be undone.`)) return;
+    setDeleting(true);
     try {
       const res = await fetch(`${cfg.apiBase(clientId)}/${s.id}`, { method: "DELETE" });
       if (!res.ok && res.status !== 204) throw new Error(`Delete failed (${res.status})`);
       setList((prev) => prev.filter((x) => x.id !== s.id));
       toast(`${s.name} deleted`, "success");
+      setConfirmCp(null);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Delete failed", "error");
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -1208,14 +1216,17 @@ function ClientDetailView() {
   }
 
   async function deleteEmployee(e: Employee) {
-    if (!confirm(`Delete employee "${e.name}"? This cannot be undone.`)) return;
+    setDeleting(true);
     try {
       const res = await fetch(`/api/clients/${clientId}/employees/${e.id}`, { method: "DELETE" });
       if (!res.ok && res.status !== 204) throw new Error(`Delete failed (${res.status})`);
       setEmployees((prev) => prev.filter((x) => x.id !== e.id));
       toast(`${e.name} deleted`, "success");
+      setConfirmEmp(null);
     } catch (err) {
       toast(err instanceof Error ? err.message : "Delete failed", "error");
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -1456,7 +1467,7 @@ function ClientDetailView() {
                       <button className="act" title="Edit" onClick={() => openEdit(s)}>
                         <Icon d={I.cog} size={14} />
                       </button>
-                      <button className="act" title="Delete" onClick={() => deleteRecord(s)}>
+                      <button className="act" title="Delete" onClick={() => setConfirmCp(s)}>
                         <Icon d={I.trash} size={14} />
                       </button>
                     </td>
@@ -1596,7 +1607,7 @@ function ClientDetailView() {
                         <button className="act" title={`Schedule ${e.name}`} onClick={() => setScheduleFor({ open: true, employeeId: e.id })}>
                           <Icon d={I.calendar} size={14} />
                         </button>
-                        <button className="act" title="Delete" onClick={() => deleteEmployee(e)}>
+                        <button className="act" title="Delete" onClick={() => setConfirmEmp(e)}>
                           <Icon d={I.trash} size={14} />
                         </button>
                       </td>
@@ -1642,6 +1653,28 @@ function ClientDetailView() {
         onClose={() => setImportState((s) => ({ ...s, open: false }))}
         onImported={load}
       />
+
+      {confirmCp && (
+        <ConfirmDialog
+          title={`Delete ${cfg.singular}`}
+          body={<>Delete {cfg.singular} <strong>{confirmCp.name}</strong>? This cannot be undone.</>}
+          confirmLabel="Delete"
+          busy={deleting}
+          onCancel={() => setConfirmCp(null)}
+          onConfirm={() => deleteRecord(confirmCp)}
+        />
+      )}
+
+      {confirmEmp && (
+        <ConfirmDialog
+          title="Delete employee"
+          body={<>Delete employee <strong>{confirmEmp.name}</strong>? This cannot be undone.</>}
+          confirmLabel="Delete"
+          busy={deleting}
+          onCancel={() => setConfirmEmp(null)}
+          onConfirm={() => deleteEmployee(confirmEmp)}
+        />
+      )}
     </main>
   );
 }

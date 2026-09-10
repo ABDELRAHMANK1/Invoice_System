@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Icon, I } from "@/app/components/Icon";
 import { useToast } from "@/app/components/Toast";
+import { ConfirmDialog } from "@/app/components/ConfirmDialog";
 
 type Client = {
   id: string;
@@ -245,6 +246,8 @@ export default function ClientsPage() {
   const [loading, setLoading]       = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editing, setEditing]       = useState<Client | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<Client | null>(null);
+  const [deleting, setDeleting]     = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -276,13 +279,20 @@ export default function ClientsPage() {
   }
 
   async function deleteClient(c: Client) {
-    if (!confirm(`Delete "${c.name}"? This cannot be undone.`)) return;
+    setDeleting(true);
     try {
-      await fetch(`/api/clients/${c.id}`, { method: "DELETE" });
+      const res = await fetch(`/api/clients/${c.id}`, { method: "DELETE" });
+      if (!res.ok && res.status !== 204) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `Delete failed: ${res.status}`);
+      }
       toast(`${c.name} deleted`, "success");
       setClients((prev) => ({ ...prev, total: prev.total - 1, data: prev.data.filter((x) => x.id !== c.id) }));
-    } catch {
-      toast("Delete failed", "error");
+      setConfirmDelete(null);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Delete failed", "error");
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -367,7 +377,7 @@ export default function ClientsPage() {
                 <button className="act" title="Edit" onClick={() => openEdit(c)}>
                   <Icon d={I.cog} size={14} />
                 </button>
-                <button className="act" title="Delete" onClick={() => deleteClient(c)}>
+                <button className="act" title="Delete" onClick={() => setConfirmDelete(c)}>
                   <Icon d={I.trash} size={14} />
                 </button>
               </div>
@@ -402,6 +412,17 @@ export default function ClientsPage() {
         onClose={() => setDrawerOpen(false)}
         onSaved={onSaved}
       />
+
+      {confirmDelete && (
+        <ConfirmDialog
+          title="Delete client"
+          body={<>Delete <strong>{confirmDelete.name}</strong>? This cannot be undone.</>}
+          confirmLabel="Delete"
+          busy={deleting}
+          onCancel={() => setConfirmDelete(null)}
+          onConfirm={() => deleteClient(confirmDelete)}
+        />
+      )}
     </main>
   );
 }
