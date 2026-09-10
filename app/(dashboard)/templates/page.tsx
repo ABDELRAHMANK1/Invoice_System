@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Icon, I } from "@/app/components/Icon";
+import { ConfirmDialog } from "@/app/components/ConfirmDialog";
 
 type TemplateKind = "pdf_form" | "docx_placeholder" | "static";
 type Template = {
@@ -88,6 +89,7 @@ export default function TemplatesPage() {
   const [upBusy, setUpBusy] = useState(false);
   const [upError, setUpError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<Template | null>(null);
 
   function openUpload() {
     setUploadOpen(true);
@@ -158,7 +160,6 @@ export default function TemplatesPage() {
   }
 
   async function handleDelete(t: Template) {
-    if (!confirm(`Delete the template “${t.name}”? This can't be undone.`)) return;
     setDeletingId(t.id);
     try {
       const res = await fetch(`/api/templates/${t.id}`, { method: "DELETE" });
@@ -167,6 +168,7 @@ export default function TemplatesPage() {
         throw new Error(body.error || `Delete failed: ${res.status}`);
       }
       setTemplates((prev) => prev.filter((x) => x.id !== t.id));
+      setConfirmDelete(null);
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : "Could not delete the template");
     } finally {
@@ -330,7 +332,7 @@ export default function TemplatesPage() {
                 </a>
                 <button
                   className="act"
-                  onClick={() => handleDelete(t)}
+                  onClick={() => setConfirmDelete(t)}
                   disabled={deletingId === t.id}
                   aria-label={`Delete ${t.name}`}
                   title="Delete template"
@@ -499,6 +501,17 @@ export default function TemplatesPage() {
             )}
           </div>
         </div>
+      )}
+
+      {confirmDelete && (
+        <ConfirmDialog
+          title="Delete template"
+          body={<>Delete the template <strong>{confirmDelete.name}</strong>? This can’t be undone.</>}
+          confirmLabel="Delete"
+          busy={deletingId === confirmDelete.id}
+          onCancel={() => setConfirmDelete(null)}
+          onConfirm={() => handleDelete(confirmDelete)}
+        />
       )}
     </main>
   );

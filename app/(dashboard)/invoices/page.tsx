@@ -10,6 +10,7 @@ import { ExportModal } from "@/app/components/ExportModal";
 import { UploadModal } from "@/app/components/UploadModal";
 import { NewInvoiceModal } from "@/app/components/NewInvoiceModal";
 import { useToast } from "@/app/components/Toast";
+import { ConfirmDialog } from "@/app/components/ConfirmDialog";
 
 type Paged<T> = {
   data: T[];
@@ -85,6 +86,8 @@ export default function InvoicesPage() {
   const [uploadOpen, setUploadOpen]   = useState(false);
   const [newOpen, setNewOpen]         = useState(false);
   const [error, setError]             = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<InvoiceRow | null>(null);
+  const [deleting, setDeleting]       = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -104,7 +107,7 @@ export default function InvoicesPage() {
   useEffect(() => { load(); }, [load]);
 
   async function deleteInvoice(row: InvoiceRow) {
-    if (!confirm(`Delete invoice ${row.invoice_number || row.id.slice(0, 8)}? This cannot be undone.`)) return;
+    setDeleting(true);
     try {
       const res = await fetch(`/api/invoices/${row.id}`, { method: "DELETE" });
       if (!res.ok && res.status !== 204) {
@@ -123,8 +126,11 @@ export default function InvoicesPage() {
         ns.delete(row.id);
         return ns;
       });
+      setConfirmDelete(null);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Delete failed", "error");
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -227,7 +233,7 @@ export default function InvoicesPage() {
         setSort={handleSort}
         onOpen={(row) => setDrawer(row)}
         onPage={(p) => setPage(p)}
-        onDelete={deleteInvoice}
+        onDelete={setConfirmDelete}
         loading={loading}
       />
 
@@ -273,6 +279,17 @@ export default function InvoicesPage() {
           load();
         }}
       />
+
+      {confirmDelete && (
+        <ConfirmDialog
+          title="Delete invoice"
+          body={<>Delete invoice <strong>{confirmDelete.invoice_number || confirmDelete.id.slice(0, 8)}</strong>? This cannot be undone.</>}
+          confirmLabel="Delete"
+          busy={deleting}
+          onCancel={() => setConfirmDelete(null)}
+          onConfirm={() => deleteInvoice(confirmDelete)}
+        />
+      )}
     </main>
   );
 }

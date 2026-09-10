@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon, I } from "@/app/components/Icon";
 import { Menu, type MenuEntry } from "@/app/components/Menu";
+import { ConfirmDialog } from "@/app/components/ConfirmDialog";
 import { StatsRow } from "@/app/components/StatsRow";
 import type { StatusTone } from "@/app/components/Pill";
 import { useToast } from "@/app/components/Toast";
@@ -749,35 +750,6 @@ function useEscape(onEscape: () => void) {
     document.addEventListener("keydown", h);
     return () => document.removeEventListener("keydown", h);
   }, []);
-}
-
-function ConfirmDialog({
-  title, body, confirmLabel, onCancel, onConfirm,
-}: {
-  title: string;
-  body: React.ReactNode;
-  confirmLabel: string;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  useEscape(onCancel);
-  return (
-    <div className="modal-backdrop" onClick={onCancel}>
-      <div className="modal" role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()} style={{ maxWidth: 420 }}>
-        <div className="modal-head">
-          <div className="modal-title"><Icon d={I.alert} size={16} /> {title}</div>
-          <button className="iconbtn" onClick={onCancel} aria-label="Close"><Icon d={I.x} size={14} /></button>
-        </div>
-        <div style={{ padding: "16px 18px", fontSize: 13, color: "var(--ink-2)", lineHeight: 1.6 }}>{body}</div>
-        <div className="modal-foot">
-          <button className="btn" onClick={onCancel}>Cancel</button>
-          <button className="btn" onClick={onConfirm} style={{ background: "var(--danger)", borderColor: "var(--danger)", color: "#fff" }}>
-            <Icon d={I.trash} size={13} /> {confirmLabel}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
 }
 
 function TaskModal({

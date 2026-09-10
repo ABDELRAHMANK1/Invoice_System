@@ -5,6 +5,7 @@ import { Icon, I } from "@/app/components/Icon";
 import { Pill, statusTone, statusLabel } from "@/app/components/Pill";
 import { UploadModal } from "@/app/components/UploadModal";
 import { useToast } from "@/app/components/Toast";
+import { ConfirmDialog } from "@/app/components/ConfirmDialog";
 
 type FileRow = {
   id: string;
@@ -37,6 +38,8 @@ export default function FilesPage() {
   const [loading, setLoading]     = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [error, setError]         = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<FileRow | null>(null);
+  const [deleting, setDeleting]   = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -54,9 +57,12 @@ export default function FilesPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  function fileLabel(file: FileRow) {
+    return file.file_name || file.file_key.split("/").pop() || file.id.slice(0, 8);
+  }
+
   async function deleteFile(file: FileRow) {
-    const label = file.file_name || file.file_key.split("/").pop() || file.id.slice(0, 8);
-    if (!confirm(`Delete "${label}"? This cannot be undone.`)) return;
+    setDeleting(true);
     try {
       const res = await fetch(`/api/files/${file.id}`, { method: "DELETE" });
       if (!res.ok && res.status !== 204) {
@@ -69,8 +75,11 @@ export default function FilesPage() {
         total: Math.max(0, prev.total - 1),
         data: prev.data.filter((f) => f.id !== file.id),
       }));
+      setConfirmDelete(null);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Delete failed", "error");
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -196,7 +205,7 @@ export default function FilesPage() {
                 <button
                   className="act"
                   title="Delete"
-                  onClick={() => deleteFile(file)}
+                  onClick={() => setConfirmDelete(file)}
                   aria-label="Delete file"
                 >
                   <Icon d={I.trash} size={14} />
@@ -230,6 +239,17 @@ export default function FilesPage() {
         onClose={() => setUploadOpen(false)}
         onSuccess={() => { toast("File uploaded", "success"); load(); }}
       />
+
+      {confirmDelete && (
+        <ConfirmDialog
+          title="Delete file"
+          body={<>Delete <strong>{fileLabel(confirmDelete)}</strong>? This cannot be undone.</>}
+          confirmLabel="Delete"
+          busy={deleting}
+          onCancel={() => setConfirmDelete(null)}
+          onConfirm={() => deleteFile(confirmDelete)}
+        />
+      )}
     </main>
   );
 }
