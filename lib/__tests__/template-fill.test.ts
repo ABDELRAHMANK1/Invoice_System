@@ -88,3 +88,26 @@ describe("sanitizeFieldMapping (server-side safety gate)", () => {
     expect(sanitizeFieldMapping({ "4.0": "city" }, new Set(fields))).toEqual({ "4.0": "city" });
   });
 });
+
+describe("guessFieldMapping — authored (.docx placeholder) names", () => {
+  it("auto-maps {{iban}} only when the names were authored by hand", () => {
+    // The no-IBAN rule protects against Belastingdienst forms where an _IBAN box
+    // is somebody else's account. A placeholder a human typed into their own
+    // contract carries no such ambiguity.
+    expect(guessFieldMapping(["iban"])["iban"]).toBeUndefined();
+    expect(guessFieldMapping(["iban"], { authoredNames: true })["iban"]).toBe("iban");
+    expect(guessFieldMapping(["rekeningnummer"], { authoredNames: true })["rekeningnummer"]).toBe("iban");
+  });
+
+  it("leaves the PDF-form rules untouched when the flag is on", () => {
+    const m = guessFieldMapping(["client_name", "kvk_number", "postcode", "email"], {
+      authoredNames: true,
+    });
+    expect(m).toEqual({
+      client_name: "name",
+      kvk_number: "kvk_number",
+      postcode: "postcode",
+      email: "email",
+    });
+  });
+});
