@@ -1,18 +1,22 @@
 /**
- * The Phase 2 scheduling use case — wiring only.
+ * The scheduling use case — wiring only.
  *
  * It gathers the inputs (employee, resolved rate, rules, holidays), hands them
  * to a `ScheduleGenerator`, and persists the result. It contains NO scheduling
  * logic and imports nothing from employee CRUD: its only coupling to the
- * algorithm is the `ScheduleGenerator` interface, so Phase 2 can land an
- * implementation without touching this file.
+ * algorithm is the `ScheduleGenerator` interface, which is why Phase 2 landed
+ * `monthlyScheduleGenerator` without rewriting anything here.
  *
- * Nothing calls this yet — no generator exists to pass in, and the dashboard's
- * "Generate monthly schedule" button is deliberately disabled.
+ * `working_days` (a MONTH total since migration 013) may be omitted by the
+ * caller and is then taken from the employee's `default_working_days`. That
+ * resolution has to happen after the employee is loaded, and this is the only
+ * place that loads it.
  */
 
 import type {
+  ClientProfileRepository,
   ClientRateRepository,
+  Employee,
   EmployeeMonthlySchedule,
   EmployeeRepository,
   MonthlyScheduleRepository,
@@ -42,12 +46,21 @@ function monthBounds(year: number, month: number): { from: string; to: string } 
   return { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) };
 }
 
+/** `working_days` omitted → the employee's own monthly default applies. */
+export type MonthlyScheduleRequestInput =
+  Omit<MonthlyScheduleRequest, "working_days"> & { working_days?: number };
+
 export async function generateMonthlySchedule(
   deps: GenerateMonthlyScheduleDeps,
-  request: MonthlyScheduleRequest,
+  input: MonthlyScheduleRequestInput,
 ): Promise<EmployeeMonthlySchedule> {
-  const employee = await deps.employees.findById(request.client_id, request.employee_id);
+  const employee = await deps.employees.findById(input.client_id, input.employee_id);
   if (!employee) throw new NotFoundError("Employee");
+
+  const request: MonthlyScheduleRequest = {
+    ...input,
+    working_days: input.working_days ?? employee.default_working_days,
+  };
 
   const { from, to } = monthBounds(request.year, request.month);
   const [clientDefaultRate, rules, holidays] = await Promise.all([
@@ -69,4 +82,49 @@ export async function generateMonthlySchedule(
     schedule_data: { ...result },
     generated_at: new Date().toISOString(),
   });
+}
+
+/**
+ * Read back a stored schedule. Separate from generation on purpose: the table
+ * and the PDF render what was generated, they never re-run the algorithm behind
+ * the user's back.
+ */
+export async function getMonthlySchedule(
+  deps: Pick<GenerateMonthlyScheduleDeps, "employees" | "schedules">,
+  clientId: string,
+  employeeId: string,
+  year: number,
+  month: number,
+): Promise<EmployeeMonthlySchedule> {
+  const employee = await deps.employees.findById(clientId, employeeId);
+  if (!employee) throw new NotFoundError("Employee");
+  const schedule = await deps.schedules.findByPeriod(employeeId, year, month);
+  if (!schedule) throw new NotFoundError("Schedule");
+  return schedule;
+}
+
+/** Everything the printed Urenlijst names: the worker and the Opdrachtgever. */
+export interface TimesheetContext {
+  employee: Employee;
+  /** "Opdrachtgever". */
+  client_name: string;
+  schedule: EmployeeMonthlySchedule;
+}
+
+export async function getTimesheetContext(
+  deps: Pick<GenerateMonthlyScheduleDeps, "employees" | "schedules"> & { profiles: ClientProfileRepository },
+  clientId: string,
+  employeeId: string,
+  year: number,
+  month: number,
+): Promise<TimesheetContext> {
+  const employee = await deps.employees.findById(clientId, employeeId);
+  if (!employee) throw new NotFoundError("Employee");
+  const [schedule, clientName] = await Promise.all([
+    deps.schedules.findByPeriod(employeeId, year, month),
+    deps.profiles.getName(clientId),
+  ]);
+  if (!schedule) throw new NotFoundError("Schedule");
+  if (clientName == null) throw new NotFoundError("Client");
+  return { employee, client_name: clientName, schedule };
 }

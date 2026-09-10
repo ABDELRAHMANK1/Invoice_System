@@ -420,21 +420,45 @@ this is intentional, do not change it.
   `006` invoices.customer_name (verkoop counterparty denormalisation),
   `007` invoices.export_count + last_exported_at + `increment_invoice_exports`,
   `008` document_templates, `009` tasks (see "Tasks + Telegram reminders"),
-  `010` clients.postcode + rsin, `011` employees + scheduling (see "Employees").
+  `010` clients.postcode + rsin, `011` employees + scheduling, `012` employees.function_title
+  + client work-time window, `013` the days input becomes a MONTH total
+  (see "Employees + monthly schedules").
 
-### Employees + salary scheduling (Phase 1)
+### Employees + monthly schedules (Phases 1–2)
 
 A client's third kind of related party (not a counterparty — they never
 appear in an export): **employees**, the workers it PAYS. Suppliers = buys
-from, customers = sells to, employees = pays. Phase 1 is data model + CRUD +
-UI only. **There is deliberately no schedule-generation algorithm** — Phase 2
-implements the `ScheduleGenerator` interface and nothing else has to move.
+from, customers = sells to, employees = pays. Phase 1 shipped the data model,
+CRUD and UI; **Phase 2 shipped the schedule generator + the printable monthly
+Urenlijst** (see "Monthly schedule generation" below).
+
+**Phase 2 is hours-only.** `employees.hourly_rate` / `clients.default_hourly_rate`
+stay in the schema and in the CRUD UI, but NOTHING in the generation, the table
+or the PDF reads them — a timesheet schedules time, it never costs it. Don't
+"complete" the feature by multiplying hours by a rate.
 
 - **DB:** migration `011_employees_and_scheduling.sql` — `clients.default_hourly_rate`,
   plus tables `employees`, `client_schedule_rules`, `public_holidays` and
-  `employee_monthly_schedules`. Run it in the Supabase SQL editor before using
-  the Employees tab. Money columns are `numeric(15, 2)` with a non-negative
-  check, matching `invoices.total_amount`.
+  `employee_monthly_schedules`; then `012_employee_function_and_work_window.sql`
+  — `employees.function_title` (the "Functie" line) and
+  `client_schedule_rules.work_start_time` / `work_end_time` (`time`, default
+  08:00–17:00, with a `work_end_time > work_start_time` check). Run both in the
+  Supabase SQL editor before using the Employees tab. Money columns are
+  `numeric(15, 2)` with a non-negative check, matching `invoices.total_amount`.
+  - The work window lives on `client_schedule_rules`, **not** on `clients`: it is
+    the same kind of fact as `max_continuous_hours`, it reaches the generator
+    through the `rules` field the `ScheduleGenerationInput` already carried, and
+    `clients` is a wide table shared with the invoicing/export/n8n flows.
+  - `013_monthly_working_days.sql` renames **`employees.default_days_per_week` →
+    `default_working_days`** and **`employee_monthly_schedules.days_per_week` →
+    `working_days`**, widening both checks to 0..31. Both generation inputs are
+    now MONTH totals (`total_hours` + `working_days`); a column named
+    `*_per_week` holding a monthly number would be exactly the silent mismatch
+    the rename removes. Each rename carries a ONE-TIME conversion guarded by the
+    old column's existence, so a re-run can never convert twice: employee
+    defaults are re-expressed with the 52/12 weeks-per-month factor (5/week → 22),
+    and stored schedules take the real worked-day count out of their own
+    `schedule_data` (falling back to the same factor when there is no day list).
 - **Rate inheritance:** `employees.hourly_rate` is an OVERRIDE; `null` means
   "inherit `clients.default_hourly_rate`". `effectiveHourlyRate()` resolves the
   pair and returns a `source` (`employee` | `client` | `none`) that the table
@@ -443,13 +467,15 @@ implements the `ScheduleGenerator` interface and nothing else has to move.
 - **Layering** (`lib/workforce/`, the only layered module in this repo — the
   rest of `lib/` is flat):
   - `domain/` — entities, rules and repository **ports**; no Supabase, no
-    Next.js, no zod. `schedule-generator.ts` is the Phase 2 seam: an interface
-    with **no implementation**.
+    Next.js, no zod. `schedule-generator.ts` is the interface;
+    `monthly-schedule-generator.ts` is its (pure, hence still domain-layer)
+    implementation, `monthlyScheduleGenerator`.
   - `application/` — use cases (`employee-use-cases.ts`,
     `schedule-rules-use-cases.ts`, `generate-monthly-schedule.ts`) + the zod
     request schemas. `generate-monthly-schedule.ts` is wiring only: it depends
-    on the `ScheduleGenerator` interface and never on employee CRUD, so Phase 2
-    lands the algorithm without touching it. Nothing calls it yet.
+    on the `ScheduleGenerator` interface and never on employee CRUD, which is
+    why Phase 2 landed the algorithm without rewriting it. The generator is
+    injected by the ROUTE, never imported by the use case.
   - `infrastructure/` — the Supabase-backed repositories. The only layer that
     knows table names.
   Routes are thin shells: validate, call a use case, map `toHttpError` →
@@ -462,15 +488,20 @@ implements the `ScheduleGenerator` interface and nothing else has to move.
   Deliberately not a runtime holiday API — that would add a network failure mode
   to a serverless path for a calculation that hasn't changed since 1583.
 - **Schedule rules** are per client (`client_schedule_rules`, `client_id` is the
-  PK). Defaults — 4 continuous hours, 30-minute break, 10-hour daily cap — live
-  in `DEFAULT_SCHEDULE_RULES` **and** as column defaults; keep the two in sync.
-  A client with no row reads the defaults instead of a 404.
+  PK). Defaults — 4 continuous hours, 30-minute break, 10-hour daily cap,
+  08:00–17:00 window — live in `DEFAULT_SCHEDULE_RULES` **and** as column
+  defaults; keep the two in sync. A client with no row reads the defaults
+  instead of a 404. `PUT` is a full replace, but the two work-window fields
+  default rather than being required, so an older caller still writes a coherent
+  row. They are edited in the **Scheduling** card on the client detail page.
 
 | Route | Purpose |
 |---|---|
 | `GET/POST /api/clients/:id/employees` | list (`?active=1`) / create |
 | `GET/PATCH/DELETE /api/clients/:id/employees/:employeeId` | read / update / delete |
 | `GET/PUT /api/clients/:id/schedule-rules` | read (defaults when unsaved) / replace |
+| `GET/POST /api/clients/:id/employees/:employeeId/schedule?year=&month=` | read / generate one month (POST body: `year`, `month`, `total_hours`, optional `working_days` — both amounts are MONTH totals) |
+| `GET /api/clients/:id/employees/:employeeId/schedule/pdf?year=&month=` | the printable Urenlijst (`?inline=1` to preview) |
 
 `PATCH` with exactly `{ "active": false }` routes through the **deactivate** use
 case — the row is kept because past schedules reference it. `GET /api/clients/:id`
@@ -478,7 +509,8 @@ now also nests `employees` alongside `suppliers` / `customers`.
 
 **The employees table edits in place** — unlike the Leveranciers / Klanten tabs,
 which open a drawer. Every column is a live control (`<InlineEdit>` for name,
-phone, rate, days/week and notes; a `.pill-sel` dropdown for active/inactive) and
+Functie, phone, rate, working days/month and notes; a `.pill-sel` dropdown for
+active/inactive) and
 each commit is an **optimistic** PATCH that reverts the row on failure, the same
 pattern as the Tasks page. The drawer is **add-only** and has no PATCH path;
 don't reintroduce an edit drawer alongside it. Notes:
@@ -486,9 +518,91 @@ don't reintroduce an edit drawer alongside it. Notes:
   keystroke: it commits on blur/Enter, abandons on Escape, and skips the request
   entirely when the value is unchanged. `onCommit` returning `false` rejects the
   edit and snaps the cell back, which is how invalid input (empty name, negative
-  rate, days outside 0–7) never reaches the API.
+  rate, working days outside 0–31) never reaches the API.
 - An empty rate box means "inherit"; it PATCHes `hourly_rate: null` and the
   placeholder shows the client default it falls back to.
+
+#### Monthly schedule generation (the algorithm)
+
+`monthlyScheduleGenerator` (`lib/workforce/domain/monthly-schedule-generator.ts`)
+is **pure and deterministic** — same request, same plan — which is what lets the
+PDF be re-rendered from `schedule_data` at any time. Inputs: `year`, `month`,
+`total_hours`, `working_days` (a MONTH total, defaulting to the employee's
+`default_working_days`), the client's rules, and the month's `public_holidays`.
+The rules, in order:
+
+1. Every calendar day of the month becomes a row (`days`), worked or not.
+2. Saturdays/Sundays are never eligible; neither is a date in `public_holidays`.
+   A holiday on a weekday prints as a **blank row**, exactly like an unselected
+   weekday (its name is kept in `days[].holiday_name` + a warning, not printed).
+3. **Day selection** — `working_days` is a MONTH total, never a weekly count.
+   `selectEvenlySpreadDays` picks positions `round(i × (m − 1) / (n − 1))` in the
+   month's ELIGIBLE-day list (weekends and holidays already removed), so the first
+   and last eligible weekday of the month are always worked and the gaps between
+   the rest are as equal as the calendar allows. A single day goes to the middle
+   of the month.
+4. **Partial weeks / holidays are a non-event** — because the spread indexes the
+   eligible list, a stub first/last week or a holiday simply is not a position
+   that can be chosen; it never clusters the days at the start and never costs
+   the request a day. Asking for more days than the month has eligible weekdays
+   works every one of them and says so in `warnings`.
+5. **Hours** are split evenly to the CENT over the selected days, remainder on
+   the LAST days, so `days[]` always sums back to `total_hours` exactly.
+6. **`max_hours_per_day` is never violated.** If the requested days can't hold the
+   hours, the selection is RE-SPREAD over more days (`ceil(total / cap)`, the same
+   even spread with a bigger n — not days appended at the end), so the extra load
+   stays distributed across the month. Only when the month runs out of eligible
+   days does the result fall short — reported in `warnings` with
+   `requested_hours` kept alongside `total_hours`, never silently dropped.
+   `working_days: 0` is the one case that does NOT widen: zero means "no working
+   days", so the hours are reported as unscheduled instead.
+7. **Breaks:** `ceil(hours / max_continuous_hours) - 1` breaks of `break_minutes`,
+   inside the same day. Pauze = their sum (0 for a short day, 30 for one, 60 for
+   two). A 3-hour day therefore has NO break, unlike the hand-filled reference.
+8. **Times:** Begintijd = the client's `work_start_time`; Eindtijd = start +
+   `floor(hours × 60)` minutes + pauze — truncated, matching the reference
+   (3,33 h from 07:00 with a 30-min break ends 10:49). Running past
+   `work_end_time` is a **warning**, not a rejection; the hard cap is
+   `max_hours_per_day`. A night-shift window (22:00 →) wraps past midnight.
+
+`totals` carries `hours`, `worked_days`, and the structural zeros
+`overtime_hours` / `km_allowance`. Both the on-screen table and the PDF print
+them in that order — **hours, days, overuren, km** — and from the day count
+onwards each value carries its own unit ("20 dagen", "0 overuren", "0 km")
+because it no longer lines up with the column header above it.
+
+The result is stored in `employee_monthly_schedules.schedule_data` (`days`,
+`shifts`, `totals`, `total_hours`, `requested_hours`, `warnings`) with
+`status = "generated"`, upserted on `(employee_id, year, month)` — regenerating a
+month REPLACES it rather than adding a version.
+
+#### The Urenlijst PDF
+
+`lib/timesheet-pdf.ts` (pdfkit, same approach as `lib/invoice-pdf.ts`) prints
+A4 **landscape**: title, a Werknemer / Functie / Opdrachtgever header with the
+green/grey legend, one row per calendar day (worked = green,
+weekend = grey with "Weekend" in Bijzonderheden, holidays + unselected weekdays
+blank), a `TOTAAL <MAAND> <JAAR>` row, and two **blank** signature blocks. Row
+geometry is sized so a 31-day month fits on ONE page — don't grow the header
+without re-checking that. Overuren / Km vergoeding are structural zeros.
+
+- The header names the worker and the **Opdrachtgever** (the client) and nothing
+  else. There is deliberately **no Uitzendbureau line** — it was removed along
+  with the `lib/agency.ts` env profile that fed it (`AGENCY_*` vars are gone from
+  `.env.example`). Don't reintroduce an agency block here.
+- **PDF metadata is part of the deliverable.** pdfkit defaults BOTH `Producer`
+  and `Creator` to `"PDFKit"`, so every renderer overrides them: the Info
+  dictionary carries `Title` (`Urenlijst <Maand> <Jaar>` / `Factuur <nummer>`)
+  plus `Author`/`Creator`/`Producer` set to the company on the document, and no
+  `Subject` or `Keywords` at all. Nothing about the toolchain ships inside a file
+  a client receives. `lib/invoice-pdf.ts` follows the same rule.
+- The download route **streams the bytes** rather than redirecting to a signed S3
+  URL the way `/api/invoices/[id]/download` does: an invoice PDF is the stored
+  artifact, a timesheet is a pure projection of `schedule_data` and can always be
+  rebuilt, so storing it would buy a bucket lifecycle and nothing else.
+- `next.config.ts`'s `outputFileTracingIncludes` keys are **per route** —
+  `serverExternalPackages: ["pdfkit"]` is global, that is not. The schedule PDF
+  route has its own entry; any future PDF route needs one too.
 
 ### Tasks + Telegram reminders
 

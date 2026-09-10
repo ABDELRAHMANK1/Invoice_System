@@ -17,12 +17,20 @@ function num(value: unknown, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+/** Postgres hands `time` back as "08:00:00"; the domain works in "HH:MM". */
+function clock(value: unknown, fallback: string): string {
+  const text = typeof value === "string" ? value.trim() : "";
+  return /^\d{2}:\d{2}/.test(text) ? text.slice(0, 5) : fallback;
+}
+
 function toRules(row: Row): ScheduleRules {
   return {
     client_id: String(row.client_id),
     max_continuous_hours: num(row.max_continuous_hours, DEFAULT_SCHEDULE_RULES.max_continuous_hours),
     break_minutes: num(row.break_minutes, DEFAULT_SCHEDULE_RULES.break_minutes),
     max_hours_per_day: num(row.max_hours_per_day, DEFAULT_SCHEDULE_RULES.max_hours_per_day),
+    work_start_time: clock(row.work_start_time, DEFAULT_SCHEDULE_RULES.work_start_time),
+    work_end_time: clock(row.work_end_time, DEFAULT_SCHEDULE_RULES.work_end_time),
     created_at: row.created_at ? String(row.created_at) : undefined,
     updated_at: row.updated_at ? String(row.updated_at) : undefined,
   };

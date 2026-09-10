@@ -20,12 +20,18 @@ vi.mock("@/app/components/Toast", () => ({ useToast: () => toastMock }));
 import ClientDetailPage from "@/app/(dashboard)/clients/[id]/page";
 
 const JAN = {
-  id: "e1", client_id: "c1", name: "Jan de Vries", phone: null, hourly_rate: null,
-  default_days_per_week: 5, active: true, notes: null, created_at: "", updated_at: "",
+  id: "e1", client_id: "c1", name: "Jan de Vries", phone: null, function_title: null, hourly_rate: null,
+  default_working_days: 22, active: true, notes: null, created_at: "", updated_at: "",
 };
 const ALI = {
-  id: "e2", client_id: "c1", name: "Ali", phone: null, hourly_rate: 25,
-  default_days_per_week: 4, active: true, notes: null, created_at: "", updated_at: "",
+  id: "e2", client_id: "c1", name: "Ali", phone: null, function_title: "Sorteermedewerker", hourly_rate: 25,
+  default_working_days: 16, active: true, notes: null, created_at: "", updated_at: "",
+};
+
+// What GET /api/clients/c1/schedule-rules answers with (migrations 011 + 012).
+const RULES = {
+  client_id: "c1", max_continuous_hours: 4, break_minutes: 30, max_hours_per_day: 10,
+  work_start_time: "07:30", work_end_time: "16:30",
 };
 
 const clientPayload = () => ({
@@ -48,6 +54,9 @@ function mockFetch(onPatch?: (body: Record<string, unknown>) => { ok: boolean; b
     if (method === "PATCH" && onPatch) {
       const res = onPatch(body);
       return { ok: res.ok, status: res.ok ? 200 : 400, json: async () => res.body ?? { error: "Update failed" } };
+    }
+    if (String(url).includes("/schedule-rules")) {
+      return { ok: true, status: 200, json: async () => RULES };
     }
     return { ok: true, status: 200, json: async () => clientPayload() };
   }) as unknown as typeof fetch;
@@ -126,19 +135,32 @@ describe("client detail — employees tab", () => {
     render(<ClientDetailPage />);
     await screen.findByLabelText("Name of Ali");
     for (const label of [
-      "Name of Ali", "Phone of Ali", "Hourly rate of Ali",
-      "Days per week of Ali", "Notes for Ali", "Status of Ali",
+      "Name of Ali", "Functie of Ali", "Phone of Ali", "Hourly rate of Ali",
+      "Working days per month of Ali", "Notes for Ali", "Status of Ali",
     ]) {
       expect(screen.getByLabelText(label)).toBeEnabled();
     }
   });
 
-  it("shows the schedule generator as disabled — Phase 2 is not built", async () => {
+  it("opens the schedule generator, pre-filled from the employee's default", async () => {
     nav.search = "tab=employees";
     render(<ClientDetailPage />);
     const btn = await screen.findByRole("button", { name: /Generate monthly schedule/i });
-    expect(btn).toBeDisabled();
-    expect(btn).toHaveAttribute("title", expect.stringMatching(/coming soon/i));
+    expect(btn).toBeEnabled();
+
+    fireEvent.click(btn);
+    const dialog = await screen.findByRole("dialog", { name: /Generate monthly schedule/i });
+    expect(dialog).toBeInTheDocument();
+    // Jan is the first active employee, so his 22 monthly days fill the form.
+    await waitFor(() => expect(screen.getByLabelText("Working days")).toHaveValue(22));
+  });
+
+  it("shows the client's saved work window in the scheduling card", async () => {
+    nav.search = "tab=employees";
+    render(<ClientDetailPage />);
+    await waitFor(() => expect(screen.getByLabelText("Work start")).toHaveValue("07:30"));
+    expect(screen.getByLabelText("Work end")).toHaveValue("16:30");
+    expect(screen.getByLabelText("Break (min)")).toHaveValue(30);
   });
 });
 
@@ -192,12 +214,12 @@ describe("client detail — inline employee editing", () => {
     const calls = mockFetch(() => ({ ok: true, body: ALI }));
     render(<ClientDetailPage />);
 
-    const days = await screen.findByLabelText("Days per week of Ali");
-    fireEvent.change(days, { target: { value: "9" } });   // cap is 7
+    const days = await screen.findByLabelText("Working days per month of Ali");
+    fireEvent.change(days, { target: { value: "40" } });   // cap is 31 days a month
     fireEvent.blur(days);
 
     expect(calls.some((c) => c.method === "PATCH")).toBe(false);
-    expect(screen.getByLabelText("Days per week of Ali")).toHaveValue(4);
+    expect(screen.getByLabelText("Working days per month of Ali")).toHaveValue(16);
 
     const name = await screen.findByLabelText("Name of Ali");
     fireEvent.change(name, { target: { value: "   " } });

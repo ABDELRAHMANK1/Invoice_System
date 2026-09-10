@@ -4,13 +4,14 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Icon, I } from "@/app/components/Icon";
+import ScheduleModal from "@/app/components/ScheduleModal";
 import { useToast } from "@/app/components/Toast";
 import { formatAliases, parseAliases } from "@/lib/aliases";
 import { formatNL } from "@/lib/billing";
 import { BTW_RATES, PRICING_MODELS } from "@/lib/types";
 import type { CustomerExtras, PricingModel, Supplier } from "@/lib/types";
-import { DEFAULT_DAYS_PER_WEEK, effectiveHourlyRate } from "@/lib/workforce/domain";
-import type { Employee } from "@/lib/workforce/domain";
+import { DEFAULT_SCHEDULE_RULES, DEFAULT_WORKING_DAYS, effectiveHourlyRate } from "@/lib/workforce/domain";
+import type { Employee, ScheduleRules } from "@/lib/workforce/domain";
 
 type Client = {
   id: string;
@@ -47,6 +48,34 @@ const emptyClientForm: ClientForm = {
   postcode: "", city: "", country: "NL", btw_number: "", kvk_number: "",
   iban: "", aliases: "", relatie_code: "", notes: "", default_hourly_rate: "",
 };
+
+// The scheduling rules are edited as strings (number boxes may be emptied
+// mid-typing, and the two work-window fields are <input type="time"> values).
+type ScheduleRulesForm = {
+  max_continuous_hours: string;
+  break_minutes: string;
+  max_hours_per_day: string;
+  work_start_time: string;
+  work_end_time: string;
+};
+
+const emptyRulesForm: ScheduleRulesForm = {
+  max_continuous_hours: String(DEFAULT_SCHEDULE_RULES.max_continuous_hours),
+  break_minutes:        String(DEFAULT_SCHEDULE_RULES.break_minutes),
+  max_hours_per_day:    String(DEFAULT_SCHEDULE_RULES.max_hours_per_day),
+  work_start_time:      DEFAULT_SCHEDULE_RULES.work_start_time,
+  work_end_time:        DEFAULT_SCHEDULE_RULES.work_end_time,
+};
+
+function rulesToForm(r: ScheduleRules): ScheduleRulesForm {
+  return {
+    max_continuous_hours: String(r.max_continuous_hours),
+    break_minutes:        String(r.break_minutes),
+    max_hours_per_day:    String(r.max_hours_per_day),
+    work_start_time:      r.work_start_time,
+    work_end_time:        r.work_end_time,
+  };
+}
 
 // Suppliers (Leveranciers) and Customers (Klanten) share an identical record
 // shape (the `customers` table mirrors `suppliers` — see migration 005), so a
@@ -712,17 +741,18 @@ function InlineEdit({ value, onCommit, ariaLabel, type, step, min, max, placehol
 // empty — empty means "inherit the client's default rate", not zero.
 type EmployeeForm = {
   name: string;
+  function_title: string;
   phone: string;
   hourly_rate: string;
-  default_days_per_week: number;
+  default_working_days: number;
   active: boolean;
   notes: string;
 };
 
 function emptyEmployeeForm(): EmployeeForm {
   return {
-    name: "", phone: "", hourly_rate: "",
-    default_days_per_week: DEFAULT_DAYS_PER_WEEK, active: true, notes: "",
+    name: "", function_title: "", phone: "", hourly_rate: "",
+    default_working_days: DEFAULT_WORKING_DAYS, active: true, notes: "",
   };
 }
 
@@ -771,10 +801,11 @@ function EmployeeModal({ clientId, clientDefaultRate, open, onClose, onSaved }: 
     try {
       const payload = {
         name:  form.name,
+        function_title: form.function_title || null,
         phone: form.phone || null,
         // Empty clears the override so the client's default applies again.
         hourly_rate: form.hourly_rate.trim() === "" ? null : Number(form.hourly_rate),
-        default_days_per_week: Number(form.default_days_per_week ?? DEFAULT_DAYS_PER_WEEK),
+        default_working_days: Number(form.default_working_days ?? DEFAULT_WORKING_DAYS),
         active: form.active,
         notes: form.notes || null,
       };
@@ -833,6 +864,18 @@ function EmployeeModal({ clientId, clientDefaultRate, open, onClose, onSaved }: 
           </div>
 
           <div className="form-group">
+            <label className="form-label" htmlFor="ef-function_title">Functie</label>
+            <div className="form-hint">Job title, printed on the monthly Urenlijst</div>
+            <input
+              id="ef-function_title"
+              className="form-input"
+              value={form.function_title}
+              placeholder="Sorteermedewerker"
+              onChange={(e) => setForm((f) => ({ ...f, function_title: e.target.value }))}
+            />
+          </div>
+
+          <div className="form-group">
             <label className="form-label" htmlFor="ef-phone">Phone</label>
             <input
               id="ef-phone"
@@ -865,18 +908,18 @@ function EmployeeModal({ clientId, clientDefaultRate, open, onClose, onSaved }: 
             </div>
 
             <div className="form-group">
-              <label className="form-label" htmlFor="ef-days">Days per week</label>
+              <label className="form-label" htmlFor="ef-days">Working days / month</label>
               <div className="form-hint">Default used when generating a schedule</div>
               <input
                 id="ef-days"
                 className="form-input"
                 type="number"
                 min="0"
-                max="7"
-                value={form.default_days_per_week}
+                max="31"
+                value={form.default_working_days}
                 onChange={(e) => setForm((f) => ({
                   ...f,
-                  default_days_per_week: e.target.value === "" ? 0 : Number(e.target.value),
+                  default_working_days: e.target.value === "" ? 0 : Number(e.target.value),
                 }))}
               />
             </div>
@@ -941,6 +984,12 @@ function ClientDetailView() {
   const [customers, setCustomers] = useState<Counterparty[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [addEmployeeOpen, setAddEmployeeOpen] = useState(false);
+  // Per-client scheduling rules live in their own table (client_schedule_rules),
+  // so they load and save separately from the client record. A client that has
+  // never saved any reads the documented defaults instead of 404-ing.
+  const [rules, setRules] = useState<ScheduleRulesForm>(emptyRulesForm);
+  const [savingRules, setSavingRules] = useState(false);
+  const [scheduleFor, setScheduleFor] = useState<{ open: boolean; employeeId: string | null }>({ open: false, employeeId: null });
   const [modal, setModal] = useState<{ open: boolean; kind: Kind; editing: Counterparty | null }>({ open: false, kind: "supplier", editing: null });
   const [importState, setImportState] = useState<{ open: boolean; kind: Kind }>({ open: false, kind: "supplier" });
 
@@ -977,6 +1026,15 @@ function ClientDetailView() {
       setSuppliers(c.suppliers ?? []);
       setCustomers(c.customers ?? []);
       setEmployees(c.employees ?? []);
+
+      // Best effort: the tabs and the client form are usable without it, so a
+      // failed rules read leaves the defaults in the boxes rather than blocking.
+      try {
+        const r = await apiJson<ScheduleRules>(`/api/clients/${clientId}/schedule-rules`);
+        setRules(rulesToForm(r));
+      } catch {
+        setRules(emptyRulesForm);
+      }
     } catch (e) {
       toast(e instanceof Error ? e.message : "Could not load client", "error");
     } finally {
@@ -1056,6 +1114,38 @@ function ClientDetailView() {
     }
   }
 
+  async function saveRules() {
+    const payload = {
+      max_continuous_hours: Number(rules.max_continuous_hours),
+      break_minutes:        Number(rules.break_minutes),
+      max_hours_per_day:    Number(rules.max_hours_per_day),
+      work_start_time:      rules.work_start_time,
+      work_end_time:        rules.work_end_time,
+    };
+    if (!Number.isFinite(payload.max_continuous_hours) || payload.max_continuous_hours <= 0
+      || !Number.isFinite(payload.max_hours_per_day) || payload.max_hours_per_day <= 0
+      || !Number.isInteger(payload.break_minutes) || payload.break_minutes < 0) {
+      toast("Hours must be positive numbers and the break a whole number of minutes", "error");
+      return;
+    }
+    setSavingRules(true);
+    try {
+      // PUT is a full replace — all five values go together, which is why the
+      // form always carries the whole rule set.
+      const saved = await apiJson<ScheduleRules>(`/api/clients/${clientId}/schedule-rules`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      setRules(rulesToForm(saved));
+      toast("Scheduling rules saved", "success");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Save failed", "error");
+    } finally {
+      setSavingRules(false);
+    }
+  }
+
   function onEmployeeAdded(e: Employee) {
     setEmployees((prev) => [...prev, e].sort((a, b) => a.name.localeCompare(b.name)));
     setAddEmployeeOpen(false);
@@ -1092,7 +1182,7 @@ function ClientDetailView() {
     return true;
   }
 
-  function commitText(e: Employee, key: "phone" | "notes", raw: string): boolean {
+  function commitText(e: Employee, key: "phone" | "notes" | "function_title", raw: string): boolean {
     patchEmployee(e, { [key]: raw.trim() || null } as Partial<Employee>);
     return true;
   }
@@ -1109,11 +1199,11 @@ function ClientDetailView() {
 
   function commitDays(e: Employee, raw: string): boolean {
     const days = Number(raw.trim());
-    if (!Number.isInteger(days) || days < 0 || days > 7) {
-      toast("Days per week must be a whole number from 0 to 7", "error");
+    if (!Number.isInteger(days) || days < 0 || days > 31) {
+      toast("Working days per month must be a whole number from 0 to 31", "error");
       return false;
     }
-    patchEmployee(e, { default_days_per_week: days });
+    patchEmployee(e, { default_working_days: days });
     return true;
   }
 
@@ -1142,6 +1232,23 @@ function ClientDetailView() {
           value={(form[key] as string) ?? ""}
           placeholder={opts?.placeholder}
           onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
+        />
+      </div>
+    );
+  }
+
+  function ruleField(key: keyof ScheduleRulesForm, label: string, type: string, step?: string) {
+    return (
+      <div className="form-group">
+        <label className="form-label" htmlFor={`sr-${key}`}>{label}</label>
+        <input
+          id={`sr-${key}`}
+          className="form-input"
+          type={type}
+          step={step}
+          min={type === "number" ? "0" : undefined}
+          value={rules[key]}
+          onChange={(e) => setRules((r) => ({ ...r, [key]: e.target.value }))}
         />
       </div>
     );
@@ -1248,6 +1355,29 @@ function ClientDetailView() {
         </div>
       </section>
 
+      {/* Scheduling — the per-client rules the Urenlijst generator works within.
+          These live in `client_schedule_rules`, not on the client row, so they
+          save through their own PUT (a full replace of the whole rule set). */}
+      <section className="card" style={{ padding: 20, marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+          <h2 style={{ fontSize: 16, margin: 0 }}>Scheduling</h2>
+          <button className="btn" onClick={saveRules} disabled={savingRules}>
+            {savingRules ? <><span className="spinner-sm" /> Saving…</> : <><Icon d={I.check} size={13} /> Save rules</>}
+          </button>
+        </div>
+        <div className="sub" style={{ fontSize: 12, marginBottom: 12 }}>
+          Applied to every generated monthly schedule for this client.
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12 }}>
+          {ruleField("work_start_time", "Work start", "time")}
+          {ruleField("work_end_time", "Work end", "time")}
+          {ruleField("max_continuous_hours", "Max continuous hours", "number", "0.25")}
+          {ruleField("break_minutes", "Break (min)", "number", "5")}
+          {ruleField("max_hours_per_day", "Max hours/day", "number", "0.25")}
+        </div>
+      </section>
+
       {/* Counterparties section — tabbed: Leveranciers / Klanten */}
       <section className="card" style={{ padding: 20 }}>
         <div className="cp-tabs" role="tablist" aria-label="Counterparties" style={{ display: "flex", gap: 4, borderBottom: "1px solid var(--line)", marginBottom: 16 }}>
@@ -1344,9 +1474,12 @@ function ClientDetailView() {
             {employees.length} employee{employees.length === 1 ? "" : "s"}
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            {/* Phase 2. The generator itself is an interface with no
-                implementation yet (lib/workforce/domain/schedule-generator.ts). */}
-            <button className="btn" disabled title="Coming soon — schedule generation ships in a later phase">
+            <button
+              className="btn"
+              onClick={() => setScheduleFor({ open: true, employeeId: null })}
+              disabled={employees.length === 0}
+              title={employees.length === 0 ? "Add an employee first" : "Generate an Urenlijst for a month"}
+            >
               <Icon d={I.calendar} size={13} /> Generate monthly schedule
             </button>
             <button className="btn primary" onClick={() => setAddEmployeeOpen(true)}>
@@ -1365,11 +1498,12 @@ function ClientDetailView() {
               <thead>
                 <tr>
                   <th>Name</th>
+                  <th style={{ width: 170 }}>Functie</th>
                   <th style={{ width: 210 }}>Hourly rate</th>
-                  <th style={{ width: 105 }}>Days/week</th>
-                  <th style={{ width: 220 }}>Notes</th>
+                  <th style={{ width: 115 }}>Days/month</th>
+                  <th style={{ width: 200 }}>Notes</th>
                   <th style={{ width: 125 }}>Status</th>
-                  <th style={{ width: 50 }}></th>
+                  <th style={{ width: 80 }}></th>
                 </tr>
               </thead>
               <tbody>
@@ -1392,6 +1526,14 @@ function ClientDetailView() {
                           ariaLabel={`Phone of ${e.name}`}
                           placeholder="Add phone"
                           className="sub"
+                        />
+                      </td>
+                      <td>
+                        <InlineEdit
+                          value={e.function_title ?? ""}
+                          onCommit={(v) => commitText(e, "function_title", v)}
+                          ariaLabel={`Functie of ${e.name}`}
+                          placeholder="Add job title"
                         />
                       </td>
                       <td>
@@ -1419,12 +1561,12 @@ function ClientDetailView() {
                       </td>
                       <td>
                         <InlineEdit
-                          value={String(e.default_days_per_week)}
+                          value={String(e.default_working_days)}
                           onCommit={(v) => commitDays(e, v)}
-                          ariaLabel={`Days per week of ${e.name}`}
+                          ariaLabel={`Working days per month of ${e.name}`}
                           type="number"
                           min="0"
-                          max="7"
+                          max="31"
                           style={{ width: 56 }}
                         />
                       </td>
@@ -1451,6 +1593,9 @@ function ClientDetailView() {
                         </span>
                       </td>
                       <td style={{ textAlign: "right" }}>
+                        <button className="act" title={`Schedule ${e.name}`} onClick={() => setScheduleFor({ open: true, employeeId: e.id })}>
+                          <Icon d={I.calendar} size={14} />
+                        </button>
                         <button className="act" title="Delete" onClick={() => deleteEmployee(e)}>
                           <Icon d={I.trash} size={14} />
                         </button>
@@ -1480,6 +1625,14 @@ function ClientDetailView() {
         open={addEmployeeOpen}
         onClose={() => setAddEmployeeOpen(false)}
         onSaved={onEmployeeAdded}
+      />
+
+      <ScheduleModal
+        clientId={clientId}
+        employees={employees}
+        initialEmployeeId={scheduleFor.employeeId}
+        open={scheduleFor.open}
+        onClose={() => setScheduleFor({ open: false, employeeId: null })}
       />
 
       <ImportCounterpartiesModal

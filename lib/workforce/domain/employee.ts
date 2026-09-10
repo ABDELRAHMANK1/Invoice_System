@@ -13,9 +13,12 @@ export interface Employee {
   client_id: string;
   name: string;
   phone: string | null;
+  /** Job title — printed as "Functie" on the monthly timesheet (migration 012). */
+  function_title: string | null;
   /** Override. `null` means "inherit the client's default_hourly_rate". */
   hourly_rate: number | null;
-  default_days_per_week: number;
+  /** Default number of working days per MONTH — pre-fills a generation request. */
+  default_working_days: number;
   active: boolean;
   notes: string | null;
   created_at: string;
@@ -26,8 +29,9 @@ export interface Employee {
 export interface EmployeeInput {
   name: string;
   phone?: string | null;
+  function_title?: string | null;
   hourly_rate?: number | null;
-  default_days_per_week?: number;
+  default_working_days?: number;
   active?: boolean;
   notes?: string | null;
 }
@@ -35,8 +39,12 @@ export interface EmployeeInput {
 /** A partial update. An absent key keeps its stored value. */
 export type EmployeePatch = Partial<EmployeeInput>;
 
-/** Default when a client hasn't set `default_days_per_week` on an employee. */
-export const DEFAULT_DAYS_PER_WEEK = 5;
+/**
+ * Default when an employee has no `default_working_days` of its own. 22 is the
+ * usual Dutch full-time working month (5 days × 52/12 weeks), i.e. the monthly
+ * re-expression of the 5-days-a-week default this replaced (migration 013).
+ */
+export const DEFAULT_WORKING_DAYS = 22;
 
 /** Where an employee's rate actually comes from, for the UI's override badge. */
 export type RateSource = "employee" | "client" | "none";
@@ -71,6 +79,16 @@ export interface EmployeeRepository {
   create(clientId: string, input: EmployeeInput): Promise<Employee>;
   update(clientId: string, employeeId: string, patch: EmployeePatch): Promise<Employee | null>;
   delete(clientId: string, employeeId: string): Promise<void>;
+}
+
+/**
+ * The non-rate client facts this feature needs. Today that is only the name —
+ * the "Opdrachtgever" line on a timesheet — kept off `ClientRateRepository` so
+ * that port keeps meaning exactly what it says.
+ */
+export interface ClientProfileRepository {
+  /** `null` when the client doesn't exist. */
+  getName(clientId: string): Promise<string | null>;
 }
 
 /** Persistence port for the one client column this feature owns. */
