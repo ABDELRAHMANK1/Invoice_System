@@ -94,7 +94,21 @@ function fmtDateNL(iso?: string | null): string {
 
 export function buildInvoicePdf(params: BuildInvoicePdfParams): Promise<Buffer> {
   const { issuer, billTo, meta, totals } = params;
-  const doc = new PDFDocument({ size: "A4", margin: MARGIN, bufferPages: true });
+  // Info dictionary. pdfkit defaults Producer AND Creator to "PDFKit", which
+  // would ship the toolchain's name inside every file a client receives, so both
+  // are overridden with the issuing company. Everything written is about the
+  // DOCUMENT — no Subject or Keywords, nothing about how it was produced.
+  const doc = new PDFDocument({
+    size: "A4",
+    margin: MARGIN,
+    bufferPages: true,
+    info: {
+      Title: `Factuur ${meta.invoice_number}`,
+      Author: issuer.name,
+      Creator: issuer.name,
+      Producer: issuer.name,
+    },
+  });
   const chunks: Buffer[] = [];
   doc.on("data", (c: Buffer) => chunks.push(c));
   const done = new Promise<Buffer>((resolve) => doc.on("end", () => resolve(Buffer.concat(chunks))));

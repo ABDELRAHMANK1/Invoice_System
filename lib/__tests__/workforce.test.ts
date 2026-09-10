@@ -25,8 +25,9 @@ const employee = (over: Partial<Employee> = {}): Employee => ({
   client_id: "c1",
   name: "Jan de Vries",
   phone: null,
+  function_title: null,
   hourly_rate: null,
-  default_days_per_week: 5,
+  default_working_days: 22,
   active: true,
   notes: null,
   created_at: "",
@@ -96,13 +97,26 @@ describe("dutch public holidays", () => {
 describe("schedule rules", () => {
   it("falls back to the documented defaults when nothing is stored", () => {
     expect(scheduleRulesOrDefaults("c1", null)).toEqual({ client_id: "c1", ...DEFAULT_SCHEDULE_RULES });
-    expect(DEFAULT_SCHEDULE_RULES).toEqual({ max_continuous_hours: 4, break_minutes: 30, max_hours_per_day: 10 });
+    // These mirror the column defaults in migrations 011 + 012.
+    expect(DEFAULT_SCHEDULE_RULES).toEqual({
+      max_continuous_hours: 4, break_minutes: 30, max_hours_per_day: 10,
+      work_start_time: "08:00", work_end_time: "17:00",
+    });
   });
 
   it("rejects a break threshold a working day can never reach", () => {
-    expect(scheduleRulesError({ max_continuous_hours: 12, break_minutes: 30, max_hours_per_day: 10 }))
+    expect(scheduleRulesError({ ...DEFAULT_SCHEDULE_RULES, max_continuous_hours: 12, max_hours_per_day: 10 }))
       .toMatch(/max_continuous_hours cannot exceed/);
     expect(scheduleRulesError(DEFAULT_SCHEDULE_RULES)).toBeNull();
+  });
+
+  it("rejects a work window that does not run forwards", () => {
+    expect(scheduleRulesError({ ...DEFAULT_SCHEDULE_RULES, work_start_time: "17:00", work_end_time: "08:00" }))
+      .toMatch(/work_end_time must be later/);
+    expect(scheduleRulesError({ ...DEFAULT_SCHEDULE_RULES, work_end_time: "25:00" }))
+      .toMatch(/must be HH:MM/);
+    // A night-shift client just sets a later start; equal times are the error case.
+    expect(scheduleRulesError({ ...DEFAULT_SCHEDULE_RULES, work_start_time: "22:00", work_end_time: "23:59" })).toBeNull();
   });
 });
 

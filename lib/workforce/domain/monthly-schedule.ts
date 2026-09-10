@@ -6,14 +6,16 @@
 export const SCHEDULE_STATUSES = ["draft", "generated", "approved", "archived"] as const;
 export type ScheduleStatus = (typeof SCHEDULE_STATUSES)[number];
 
-/** What was asked for: "160 hours across 5 days a week in March 2027". */
+/** What was asked for: "160 hours across 20 working days in March 2027". */
 export interface MonthlyScheduleRequest {
   employee_id: string;
   client_id: string;
   year: number;
   month: number;
+  /** Hours for the whole month. */
   total_hours: number;
-  days_per_week: number;
+  /** Working days for the whole MONTH (migration 013 — was days_per_week). */
+  working_days: number;
 }
 
 export interface EmployeeMonthlySchedule extends MonthlyScheduleRequest {

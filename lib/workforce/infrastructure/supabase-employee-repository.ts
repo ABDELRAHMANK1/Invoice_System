@@ -9,6 +9,7 @@
 
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import type {
+  ClientProfileRepository,
   ClientRateRepository,
   Employee,
   EmployeeInput,
@@ -33,8 +34,9 @@ function toEmployee(row: Row): Employee {
     client_id: String(row.client_id),
     name: String(row.name ?? ""),
     phone: (row.phone as string | null) ?? null,
+    function_title: (row.function_title as string | null) ?? null,
     hourly_rate: num(row.hourly_rate),
-    default_days_per_week: num(row.default_days_per_week) ?? 0,
+    default_working_days: num(row.default_working_days) ?? 0,
     active: row.active !== false,
     notes: (row.notes as string | null) ?? null,
     created_at: String(row.created_at ?? ""),
@@ -116,6 +118,18 @@ export const supabaseEmployeeRepository: EmployeeRepository = {
       .eq("id", employeeId)
       .eq("client_id", clientId);
     if (error) throw new Error(error.message);
+  },
+};
+
+export const supabaseClientProfileRepository: ClientProfileRepository = {
+  async getName(clientId) {
+    const { data, error } = await supabaseAdmin
+      .from("clients")
+      .select("name")
+      .eq("id", clientId)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    return data ? String(data.name ?? "") : null;
   },
 };
 
