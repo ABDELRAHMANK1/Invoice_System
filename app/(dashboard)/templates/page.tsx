@@ -3,8 +3,28 @@
 import { useEffect, useState } from "react";
 import { Icon, I } from "@/app/components/Icon";
 
-type Template = { id: string; name: string; description: string | null };
+type TemplateKind = "pdf_form" | "docx_placeholder" | "static";
+type Template = {
+  id: string;
+  name: string;
+  description: string | null;
+  kind: TemplateKind;
+  mime_type: string | null;
+};
 type ClientOption = { id: string; name: string };
+
+// A `static` template has nothing to fill (a PDF with no form fields, an .xlsx,
+// a .docx with no {{placeholders}}) — its only action is downloading it blank.
+const isFillable = (t: Template) => t.kind !== "static";
+
+// Short badge for the source format, read off the stored mime type.
+function formatLabel(mime: string | null): string {
+  if (!mime) return "FILE";
+  if (mime.includes("wordprocessingml")) return "DOCX";
+  if (mime.includes("spreadsheetml")) return "XLSX";
+  if (mime.includes("pdf")) return "PDF";
+  return "FILE";
+}
 
 // Client columns an uploaded template can auto-fill, with labels. Mirrors
 // FILLABLE_CLIENT_COLUMNS in lib/template-fill.ts — kept local (not imported) so
@@ -15,10 +35,12 @@ const FILLABLE_COLUMNS: Array<{ value: string; label: string }> = [
   { value: "iban", label: "IBAN" },
   { value: "address", label: "Address" },
   { value: "city", label: "City" },
+  { value: "postcode", label: "Postcode" },
   { value: "phone_number", label: "Phone" },
   { value: "email", label: "Email" },
   { value: "btw_number", label: "BTW number" },
   { value: "kvk_number", label: "KVK number" },
+  { value: "rsin", label: "RSIN / fiscaal nummer" },
 ];
 
 async function apiJson<T>(url: string): Promise<T> {
@@ -43,6 +65,10 @@ export default function TemplatesPage() {
   const [clients, setClients] = useState<ClientOption[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  // Templates-list search. Purely client-side: GET /api/templates is unpaginated
+  // and returns every row, so there is nothing to debounce or re-fetch.
+  const [query, setQuery] = useState("");
+
   // Client-picker modal state.
   const [active, setActive] = useState<Template | null>(null);
   const [search, setSearch] = useState("");
@@ -55,6 +81,7 @@ export default function TemplatesPage() {
   const [upStep, setUpStep] = useState<"pick" | "review">("pick");
   const [upFile, setUpFile] = useState<File | null>(null);
   const [upFields, setUpFields] = useState<string[]>([]);
+  const [upKind, setUpKind] = useState<TemplateKind>("static");
   const [upMapping, setUpMapping] = useState<Record<string, string>>({});
   const [upName, setUpName] = useState("");
   const [upDesc, setUpDesc] = useState("");
@@ -67,6 +94,7 @@ export default function TemplatesPage() {
     setUpStep("pick");
     setUpFile(null);
     setUpFields([]);
+    setUpKind("static");
     setUpMapping({});
     setUpName("");
     setUpDesc("");
@@ -78,7 +106,10 @@ export default function TemplatesPage() {
     setUploadOpen(false);
   }
 
-  // Step 1: user picked a PDF → discover its fields + auto-mapping, advance to review.
+  // Step 1: user picked a file → work out how it can be filled (kind) plus its
+  // fields + auto-mapping, then advance to review. A document with no fillable
+  // fields is NOT an error here — it comes back as `static` and the review step
+  // offers to save it as a download-blank-only template.
   async function handleInspect(file: File) {
     setUpFile(file);
     setUpBusy(true);
@@ -90,18 +121,19 @@ export default function TemplatesPage() {
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error || `Inspect failed: ${res.status}`);
       setUpFields(body.fields || []);
+      setUpKind(body.kind || "static");
       setUpMapping(body.mapping || {});
-      setUpName(file.name.replace(/\.pdf$/i, ""));
+      setUpName(file.name.replace(/\.(pdf|docx|xlsx)$/i, ""));
       setUpStep("review");
     } catch (e) {
-      setUpError(e instanceof Error ? e.message : "Could not read this PDF");
+      setUpError(e instanceof Error ? e.message : "Could not read this document");
       setUpFile(null);
     } finally {
       setUpBusy(false);
     }
   }
 
-  // Step 2: save the template (upload PDF + insert row).
+  // Step 2: save the template (upload the file + insert row).
   async function handleSaveTemplate() {
     if (!upFile) return;
     if (!upName.trim()) return setUpError("Enter a template name");
@@ -180,6 +212,16 @@ export default function TemplatesPage() {
     ? clients.filter((c) => c.name.toLowerCase().includes(search.trim().toLowerCase()))
     : clients;
 
+  // Name + description, so "iban" finds the Opgaaf form by its description too.
+  const q = query.trim().toLowerCase();
+  const visibleTemplates = q
+    ? templates.filter(
+        (t) =>
+          t.name.toLowerCase().includes(q) ||
+          (t.description ?? "").toLowerCase().includes(q),
+      )
+    : templates;
+
   async function handleFill() {
     if (!active) return;
     if (!clientId) return setModalError("Select a client");
@@ -209,7 +251,7 @@ export default function TemplatesPage() {
       <div className="page-h">
         <div>
           <h1>Document Templates</h1>
-          <div className="sub">Pick a template and a client — the form is auto-filled with that client’s data and downloaded.</div>
+          <div className="sub">Pick a template and a client — the form is auto-filled with that client’s data and downloaded. Or download any template blank.</div>
         </div>
         <button className="btn primary" onClick={openUpload}>
           <Icon d={I.plus} size={14} /> Upload template
@@ -218,19 +260,42 @@ export default function TemplatesPage() {
 
       {loadError && <div className="modal-error"><Icon d={I.alert} size={13} />{loadError}</div>}
 
-      {templates.length === 0 && !loadError ? (
+      {templates.length > 0 && (
+        <div className="filters">
+          <div className="fbar">
+            <div className="field">
+              <Icon d={I.search} size={14} />
+              <input
+                aria-label="Search templates"
+                placeholder="Search templates…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+            </div>
+            {q && (
+              <button className="btn ghost" onClick={() => setQuery("")}>
+                Clear
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {visibleTemplates.length === 0 && !loadError ? (
         <div className="table-card" style={{ padding: "40px 24px", textAlign: "center", color: "var(--faint)" }}>
-          No templates yet.
+          {templates.length === 0 ? "No templates yet." : `No templates match “${query.trim()}”.`}
         </div>
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 14 }}>
-          {templates.map((t) => (
-            // Relative wrapper so the delete button is a SIBLING of the card
+          {visibleTemplates.map((t) => (
+            // Relative wrapper so the row actions are SIBLINGS of the card
             // button (a <button> inside a <button> is invalid HTML).
             <div key={t.id} style={{ position: "relative" }}>
               <button
                 className="table-card"
-                onClick={() => openPicker(t)}
+                // A fillable template opens the client picker; a `static` one has
+                // no fill path, so its card IS the blank download.
+                onClick={() => (isFillable(t) ? openPicker(t) : triggerDownload(`/api/templates/${t.id}/download`))}
                 style={{
                   width: "100%", padding: "18px 20px", textAlign: "left", cursor: "pointer",
                   display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-start",
@@ -243,19 +308,36 @@ export default function TemplatesPage() {
                 }}
               >
                 <span className="nav-icon" style={{ display: "inline-flex" }}><Icon d={I.copy} size={18} /></span>
-                <span style={{ fontWeight: 700, fontSize: 14, paddingRight: 22 }}>{t.name}</span>
+                <span style={{ fontWeight: 700, fontSize: 14, paddingRight: 52 }}>{t.name}</span>
                 {t.description && <span style={{ fontSize: 12.5, color: "var(--muted)" }}>{t.description}</span>}
+                <span style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 10.5, fontWeight: 600, letterSpacing: ".04em", color: "var(--faint)" }}>
+                  <span>{formatLabel(t.mime_type)}</span>
+                  <span aria-hidden>·</span>
+                  <span>{isFillable(t) ? "AUTO-FILL" : "BLANK ONLY"}</span>
+                </span>
               </button>
-              <button
-                className="act"
-                onClick={() => handleDelete(t)}
-                disabled={deletingId === t.id}
-                aria-label={`Delete ${t.name}`}
-                title="Delete template"
-                style={{ position: "absolute", top: 12, right: 12 }}
-              >
-                <Icon d={I.trash} size={14} />
-              </button>
+              <div style={{ position: "absolute", top: 12, right: 12, display: "flex", gap: 4 }}>
+                {/* Blank download. A plain link, like the invoice/file download
+                    actions — the route 307s to a signed S3 URL that already
+                    carries an attachment Content-Disposition. */}
+                <a
+                  className="act"
+                  href={`/api/templates/${t.id}/download`}
+                  aria-label={`Download ${t.name} blank`}
+                  title="Download blank (unfilled)"
+                >
+                  <Icon d={I.download} size={14} />
+                </a>
+                <button
+                  className="act"
+                  onClick={() => handleDelete(t)}
+                  disabled={deletingId === t.id}
+                  aria-label={`Delete ${t.name}`}
+                  title="Delete template"
+                >
+                  <Icon d={I.trash} size={14} />
+                </button>
+              </div>
             </div>
           ))}
         </div>
@@ -298,6 +380,14 @@ export default function TemplatesPage() {
             {modalError && <div className="modal-error"><Icon d={I.alert} size={13} />{modalError}</div>}
 
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              {/* Escape hatch: the blank document, without picking a client. */}
+              <a
+                className="btn ghost"
+                href={`/api/templates/${active.id}/download`}
+                style={{ marginRight: "auto" }}
+              >
+                <Icon d={I.download} size={13} /> Blank
+              </a>
               <button className="btn ghost" onClick={closePicker} disabled={busy}>Cancel</button>
               <button className="btn primary" onClick={handleFill} disabled={busy || !clientId}>
                 {busy ? <><span className="spinner-sm" /> Generating…</> : <><Icon d={I.download} size={13} /> Fill &amp; download</>}
@@ -319,14 +409,17 @@ export default function TemplatesPage() {
             {upStep === "pick" && (
               <>
                 <div style={{ fontSize: 12.5, color: "var(--muted)" }}>
-                  Upload a fillable PDF form. We’ll detect its fields automatically and match them to client data.
+                  Upload a PDF, Word (.docx) or Excel (.xlsx) document. We’ll detect what can be
+                  auto-filled — a fillable PDF form’s fields, or <code>{"{{placeholders}}"}</code> in a
+                  Word file — and match them to client data. A document with neither is saved as a
+                  blank-download template.
                 </div>
                 <label className="file-drop" style={{ cursor: upBusy ? "wait" : "pointer" }}>
                   <Icon d={I.upload} size={18} />
-                  <span>{upBusy ? "Reading PDF…" : "Choose a PDF file"}</span>
+                  <span>{upBusy ? "Reading document…" : "Choose a file"}</span>
                   <input
                     type="file"
-                    accept="application/pdf"
+                    accept=".pdf,.docx,.xlsx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     style={{ display: "none" }}
                     disabled={upBusy}
                     onChange={(e) => { const f = e.target.files?.[0]; if (f) handleInspect(f); e.target.value = ""; }}
@@ -347,9 +440,23 @@ export default function TemplatesPage() {
                   <input id="tpl-desc" className="form-input" placeholder="Optional" value={upDesc} onChange={(e) => setUpDesc(e.target.value)} disabled={upBusy} />
                 </div>
 
+                {upKind === "static" ? (
+                  <div style={{ border: "1px solid var(--line)", borderRadius: "var(--r-md)", padding: "12px 14px", fontSize: 12.5, color: "var(--muted)", display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ fontWeight: 700, color: "var(--ink)" }}>Nothing to auto-fill in this document</div>
+                    <div>
+                      It has no fillable PDF form fields and no <code>{"{{placeholders}}"}</code>. It can still
+                      be saved as a template — it will be downloaded blank, to print and fill by hand.
+                    </div>
+                    <div style={{ fontSize: 11.5, color: "var(--faint)" }}>
+                      To auto-fill a document like this, save it as Word (.docx), type
+                      <code>{" {{name}} "}</code>, <code>{"{{address}}"}</code>, <code>{"{{kvk_number}}"}</code> …
+                      where the blanks are, and upload that instead.
+                    </div>
+                  </div>
+                ) : (
                 <div>
                   <div style={{ fontSize: 11.5, fontWeight: 600, letterSpacing: ".04em", textTransform: "uppercase", color: "var(--faint)", marginBottom: 6 }}>
-                    Detected fields — {mappedCount} of {upFields.length} auto-filled
+                    Detected {upKind === "docx_placeholder" ? "placeholders" : "fields"} — {mappedCount} of {upFields.length} auto-filled
                   </div>
                   <div style={{ border: "1px solid var(--line)", borderRadius: "var(--r-md)", maxHeight: 240, overflowY: "auto" }}>
                     {upFields.map((f) => {
@@ -375,9 +482,10 @@ export default function TemplatesPage() {
                     })}
                   </div>
                   <div style={{ fontSize: 11.5, color: "var(--faint)", marginTop: 6 }}>
-                    Auto-matched by field name — check each one and correct it if wrong. Set a field to “— not filled —” to leave it blank on the generated document.
+                    Auto-matched by name — check each one and correct it if wrong. Set a field to “— not filled —” to leave it blank on the generated document.
                   </div>
                 </div>
+                )}
 
                 {upError && <div className="modal-error"><Icon d={I.alert} size={13} />{upError}</div>}
 

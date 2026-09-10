@@ -1,7 +1,96 @@
 import { PDFDocument } from "pdf-lib";
+import JSZip from "jszip";
+import { discoverDocxPlaceholders } from "@/lib/docx-fill";
 
-/** Max size for an uploaded template PDF (mirrors the raw-convert upload cap). */
+/** Max size for an uploaded template file (mirrors the raw-convert upload cap). */
 export const TEMPLATE_MAX_BYTES = 10 * 1024 * 1024;
+
+/**
+ * How a template is filled. Stored on `document_templates.kind` (migration 014).
+ *
+ *  • `pdf_form`         — AcroForm PDF; `field_mapping` keys are PDF field names.
+ *  • `docx_placeholder` — .docx with `{{token}}` text; keys are placeholder names.
+ *  • `static`           — no fill path at all; the document is only ever
+ *                         downloaded blank. This is what a text-based PDF with no
+ *                         form fields becomes (see `detectTemplateFormat`), and
+ *                         it is a legitimate template, not a failed upload.
+ */
+export const TEMPLATE_KINDS = ["pdf_form", "docx_placeholder", "static"] as const;
+export type TemplateKind = (typeof TEMPLATE_KINDS)[number];
+
+export function isTemplateKind(value: unknown): value is TemplateKind {
+  return typeof value === "string" && (TEMPLATE_KINDS as readonly string[]).includes(value);
+}
+
+/** Upload formats we accept. Only `pdf` and `docx` can be filled; `xlsx` is
+ *  always `static`. */
+export type TemplateFormat = "pdf" | "docx" | "xlsx";
+
+export const TEMPLATE_FORMAT_MIME: Record<TemplateFormat, string> = {
+  pdf: "application/pdf",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+};
+
+/** `accept` attribute for the upload input, kept next to the formats it mirrors. */
+export const TEMPLATE_ACCEPT = ".pdf,.docx,.xlsx," + Object.values(TEMPLATE_FORMAT_MIME).join(",");
+
+/**
+ * Identify an uploaded template from its BYTES, never from its filename or the
+ * browser-supplied content type — both are trivially wrong or spoofed.
+ *
+ * PDF is the `%PDF-` signature (searched in the first KB, since a small amount
+ * of leading junk before the header is legal and real files have it). .docx and
+ * .xlsx are both zips, so they are told apart by the part that defines them.
+ * Anything else returns null and is rejected at the route.
+ */
+export async function detectTemplateFormat(buffer: Buffer): Promise<TemplateFormat | null> {
+  if (buffer.subarray(0, 1024).toString("latin1").includes("%PDF-")) return "pdf";
+  // Local file header of a non-empty zip. OOXML always has entries.
+  if (buffer.subarray(0, 4).toString("latin1") !== "PK\u0003\u0004") return null;
+
+  let zip: JSZip;
+  try {
+    zip = await JSZip.loadAsync(buffer);
+  } catch {
+    return null;
+  }
+  if (zip.file("word/document.xml")) return "docx";
+  if (zip.file("xl/workbook.xml")) return "xlsx";
+  return null;
+}
+
+/**
+ * Decide a template's fill mode and enumerate whatever it can fill.
+ *
+ * The rule that replaces the old "no form fields ⇒ reject": a document is
+ * `static` whenever it has nothing to fill. That covers a flat PDF, a .docx with
+ * no placeholders and every .xlsx — all perfectly good templates to download
+ * blank. Only a genuinely unreadable or unsupported file is an error, and that
+ * is signalled by throwing.
+ */
+export async function inspectTemplate(
+  buffer: Buffer,
+  format: TemplateFormat,
+): Promise<{ kind: TemplateKind; fields: string[] }> {
+  if (format === "xlsx") return { kind: "static", fields: [] };
+
+  if (format === "docx") {
+    const fields = await discoverDocxPlaceholders(buffer);
+    return fields.length > 0
+      ? { kind: "docx_placeholder", fields }
+      : { kind: "static", fields: [] };
+  }
+
+  const fields = await discoverTemplateFields(buffer);
+  return fields.length > 0 ? { kind: "pdf_form", fields } : { kind: "static", fields: [] };
+}
+
+/** File extension of a stored template, from its S3 key. Templates are no longer
+ *  all PDFs, so the download/fill routes must not assume one. */
+export function templateExtension(s3Key: string | null | undefined): string {
+  return (s3Key?.split("?")[0].match(/\.([a-z0-9]+)$/i)?.[1] || "pdf").toLowerCase();
+}
 
 /**
  * Client columns an uploaded template can be auto-mapped to. Each MUST be a real
@@ -53,8 +142,10 @@ const FIELD_GUESS_RULES: Array<[RegExp, FillableClientColumn]> = [
 ];
 
 /**
- * Enumerate the AcroForm field names in an uploaded template PDF. Throws if the
- * PDF can't be parsed or has no fillable form fields (caller returns a 400).
+ * Enumerate the AcroForm field names in an uploaded template PDF. Throws only if
+ * the PDF can't be parsed (caller returns a 400). An empty array is NOT an
+ * error: pdf-lib fabricates an empty AcroForm for a flat PDF, so `[]` simply
+ * means "no fillable fields" and `inspectTemplate` files it as `static`.
  */
 export async function discoverTemplateFields(pdfBuffer: Buffer): Promise<string[]> {
   const pdfDoc = await PDFDocument.load(pdfBuffer);
@@ -87,14 +178,35 @@ export function sanitizeFieldMapping(
 }
 
 /**
- * Best-effort automatic mapping: PDF field name → clients column, by keyword.
+ * Extra rule for AUTHORED names — the `{{placeholder}}` tokens someone typed
+ * into a .docx themselves, as opposed to a field name a government form
+ * generator chose. The no-IBAN rule above exists because `_IBAN` on a
+ * Belastingdienst form regularly means somebody else's account; a placeholder a
+ * human wrote as `{{iban}}` in their own contract means the client's IBAN and
+ * nothing else, so it is safe to auto-map there and only there.
+ */
+const AUTHORED_GUESS_RULES: Array<[RegExp, FillableClientColumn]> = [
+  [/iban|rekeningnummer/i, "iban"],
+];
+
+/**
+ * Best-effort automatic mapping: field name → clients column, by keyword.
  * Fields with no confident match are simply left out of the mapping (they render
  * blank on fill) — this is the fully-automatic path, so there's no manual step.
+ *
+ * `authoredNames` opts in to the rules that are only safe when the names were
+ * written by us rather than by a form generator (see AUTHORED_GUESS_RULES).
  */
-export function guessFieldMapping(fieldNames: string[]): Record<string, FillableClientColumn> {
+export function guessFieldMapping(
+  fieldNames: string[],
+  opts?: { authoredNames?: boolean },
+): Record<string, FillableClientColumn> {
+  const rules = opts?.authoredNames
+    ? [...AUTHORED_GUESS_RULES, ...FIELD_GUESS_RULES]
+    : FIELD_GUESS_RULES;
   const mapping: Record<string, FillableClientColumn> = {};
   for (const field of fieldNames) {
-    for (const [re, col] of FIELD_GUESS_RULES) {
+    for (const [re, col] of rules) {
       if (re.test(field)) { mapping[field] = col; break; }
     }
   }

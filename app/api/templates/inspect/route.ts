@@ -1,17 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireInternalApiKey } from "@/lib/http";
 import {
-  discoverTemplateFields,
+  detectTemplateFormat,
   guessFieldMapping,
+  inspectTemplate,
   TEMPLATE_MAX_BYTES,
 } from "@/lib/template-fill";
 
 export const runtime = "nodejs";
 
 // POST /api/templates/inspect — step 1 of the "upload a template" flow.
-// Accepts a multipart PDF, discovers its AcroForm fields, and returns them plus
-// an auto-generated field → clients-column mapping. Writes NOTHING (no S3, no
-// DB) — this is a pure preview so Ammar can confirm before saving.
+// Accepts a multipart PDF / .docx / .xlsx, works out how (or whether) it can be
+// filled, and returns its fillable fields plus an auto-generated field →
+// clients-column mapping. Writes NOTHING (no S3, no DB) — this is a pure preview
+// so Ammar can confirm before saving.
+//
+// A document with nothing to fill is NOT an error: it comes back as
+// `kind: "static"` with no fields, and the UI offers to save it as a
+// download-blank-only template. Rejecting it was the old PDF-form-only rule.
 export async function POST(req: NextRequest) {
   const authError = requireInternalApiKey(req);
   if (authError) return authError;
@@ -24,26 +30,32 @@ export async function POST(req: NextRequest) {
   }
 
   const file = form.get("file");
-  if (!(file instanceof File)) return jsonError("A PDF file is required", 400);
+  if (!(file instanceof File)) return jsonError("A file is required", 400);
   if (file.size === 0) return jsonError("The uploaded file is empty", 400);
   if (file.size > TEMPLATE_MAX_BYTES) return jsonError("File is too large (max 10 MB)", 400);
 
   const buffer = Buffer.from(await file.arrayBuffer());
-  if (!buffer.subarray(0, 5).toString("latin1").startsWith("%PDF-")) {
-    return jsonError("Only PDF files are supported", 400);
+  const format = await detectTemplateFormat(buffer);
+  if (!format) {
+    return jsonError("Unsupported file type — upload a PDF, Word (.docx) or Excel (.xlsx) file", 400);
   }
 
-  let fields: string[];
+  let inspected: { kind: string; fields: string[] };
   try {
-    fields = await discoverTemplateFields(buffer);
+    inspected = await inspectTemplate(buffer, format);
   } catch {
-    return jsonError("Could not read this PDF — it may be corrupt or password-protected", 400);
+    return jsonError(
+      format === "pdf"
+        ? "Could not read this PDF — it may be corrupt or password-protected"
+        : "Could not read this document — it may be corrupt or password-protected",
+      400,
+    );
   }
 
-  if (fields.length === 0) {
-    return jsonError("This PDF has no fillable form fields, so it can't be used as a template", 400);
-  }
-
-  const mapping = guessFieldMapping(fields);
-  return NextResponse.json({ fields, mapping });
+  // Placeholder names in a .docx were authored by hand, so they can be trusted
+  // in a way a government form's field names can't (see guessFieldMapping).
+  const mapping = guessFieldMapping(inspected.fields, {
+    authoredNames: inspected.kind === "docx_placeholder",
+  });
+  return NextResponse.json({ format, kind: inspected.kind, fields: inspected.fields, mapping });
 }

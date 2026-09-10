@@ -422,7 +422,8 @@ this is intentional, do not change it.
   `008` document_templates, `009` tasks (see "Tasks + Telegram reminders"),
   `010` clients.postcode + rsin, `011` employees + scheduling, `012` employees.function_title
   + client work-time window, `013` the days input becomes a MONTH total
-  (see "Employees + monthly schedules").
+  (see "Employees + monthly schedules"), `014` document_templates.kind +
+  mime_type (see "Document Templates").
 
 ### Employees + monthly schedules (Phases 1–2)
 
@@ -746,6 +747,77 @@ the UI renders them in the browser's local zone via `nl-NL` formatting.
   pipeline writes free-text `client_name`/`supplier_name` with null FKs and is
   unaffected; the invoice list prefers `clients.name` via `client_id` and falls
   back to the free-text column.
+
+### Document Templates
+
+Upload a document once, then generate it per client: `/templates`
+(`app/(dashboard)/templates/page.tsx`) + `app/api/templates/*`, backed by
+`document_templates` (migrations `008` + `014`) with the blank file in S3 under
+`templates/`.
+
+**Templates are NOT all fillable PDFs.** `008` assumed they would be and the
+upload rejected anything else; a real management contract
+(`Managementovereenkomst_Vervoermanager.pdf`) disproved it — a normal,
+non-scanned, text-based PDF with printed `______` blanks and **zero AcroForm
+fields**. Note pdf-lib does not error on those: `getForm()` fabricates an empty
+AcroForm, so `discoverTemplateFields` returns `[]`. An empty field list is
+information, not a failure.
+
+So `014` gives each template an explicit **`kind`** (fill mode), decided
+server-side from the BYTES on upload and never from the filename, the posted
+content type or a posted `kind`:
+
+| `kind` | source | fill path |
+|---|---|---|
+| `pdf_form` | AcroForm PDF | `fillTemplate` (pdf-lib) — the original path |
+| `docx_placeholder` | `.docx` with `{{token}}` text | `fillDocxTemplate` (`lib/docx-fill.ts`) |
+| `static` | anything with nothing to fill | none — blank download only |
+
+`static` covers a PDF with no form fields, a `.docx` with no placeholders and
+every `.xlsx`. It is a legitimate template (print it, sign it by hand), **not a
+rejected upload** — don't reintroduce a "no fillable fields" error. To auto-fill
+a document like the Managementovereenkomst, it is saved as `.docx` with
+`{{name}}` / `{{address}}` / … typed where the blanks are and uploaded as that.
+Overlaying text onto a flat PDF at guessed coordinates was considered and
+rejected: underscores say where a blank is, never what belongs in it, and half
+of that contract's blanks are per-agreement values, not client master data.
+
+- `field_mapping` keeps ONE generic shape for both fill paths —
+  `{fieldOrPlaceholderName: clientColumn}` — so `guessFieldMapping`,
+  `sanitizeFieldMapping` and the upload review UI are shared, not forked.
+  `sanitizeFieldMapping` remains the single server-side gate: an entry survives
+  only if the field really exists in the uploaded bytes and the target is in
+  `FILLABLE_CLIENT_COLUMNS`. A `static` template therefore always stores `{}`.
+- `guessFieldMapping(names, { authoredNames: true })` — passed only for
+  `docx_placeholder`. It adds the IBAN rule that is deliberately absent for PDFs:
+  `_IBAN` on a Belastingdienst form is often somebody else's account, but a
+  `{{iban}}` a human typed into their own contract is not ambiguous.
+- **`lib/docx-fill.ts`** uses **jszip** (already a dependency for the xlsx code —
+  no new package) and is built around the one thing that makes docx templating
+  hard: **Word splits a placeholder across runs**, so `{{client_name}}` is
+  routinely stored as `<w:t>{{clie</w:t>…<w:t>nt_name}}</w:t>`. Every operation
+  therefore reads the run text JOINED per paragraph and writes back at run level.
+  It rewrites **only the runs a placeholder overlaps** rather than collapsing the
+  paragraph into one run (the usual shortcut, which flattens bold/italic
+  elsewhere in the line), and the value lands in the run the placeholder STARTED
+  in so it inherits that formatting. Body + `header*`/`footer*`/notes parts are
+  all filled. An unmapped or null placeholder becomes an **empty string** — never
+  leave visible `{{…}}` in a document a client receives.
+- **Nothing assumes `.pdf` any more**: the S3 key, the stored `mime_type`, the
+  filled file's extension and its content type all follow the source format
+  (`templateExtension` reads it off the key). A `.docx` template yields a `.docx`.
+- `GET /api/templates/[id]/download` returns the **blank** template — a 307 to a
+  signed S3 URL like `/api/invoices/[id]/download` (`?inline=1` previews), since
+  the blank file is a stored artifact. It is the only way to get a `static`
+  template out, and the fill modal offers it too. `POST /api/templates/[id]/fill`
+  refuses a `static` template rather than producing an unchanged copy.
+- The templates list has a **client-side** name/description search:
+  `GET /api/templates` is unpaginated and returns every row, so there is nothing
+  to debounce or re-fetch. It uses the shared `.filters/.fbar/.field` language.
+- Tests: `lib/__tests__/docx-fill.test.ts` (**`@vitest-environment node`** — the
+  repo default is jsdom and pdf-lib type-checks input against its own realm's
+  Uint8Array, which a Node Buffer from under jsdom fails). Its docx fixtures are
+  hand-written XML specifically so placeholders are split across runs.
 
 ## Conventions worth knowing before editing
 
