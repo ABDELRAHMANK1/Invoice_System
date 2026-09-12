@@ -27,25 +27,27 @@
  *    are not positions that can be chosen.
  * 5. Asking for more days than the month has eligible weekdays works every one of
  *    them and says so in `warnings`.
- * 5b. Before any of that, the numbers AS TYPED are sanity-checked:
- *    `total_hours / working_days > max_hours_per_day` raises an `input` warning
- *    ("20 hours over 2 days averages 10 h/day"). The generator still expands
- *    into extra days as rule 7 describes — this warning is additional, not a
- *    replacement, because the expansion hides what is usually a typo.
  * 6. `total_hours` is split evenly (to the cent) over the selected days; the
  *    remainder cents land on the LAST days, so the day totals always sum back to
  *    the request exactly.
- * 7. `max_hours_per_day` is never violated. If the requested days can't hold the
- *    hours, the selection is re-spread over MORE days (the same even spread, just
- *    with a bigger n, so the extra load stays distributed across the month);
- *    only when the month runs out of eligible days does the schedule fall short —
- *    reported as a warning, never silently dropped.
+ * 7. `max_hours_per_day` is a HARD cap and the day count is fixed at what was
+ *    requested. The generator does NOT invent extra days to make the hours fit,
+ *    and never puts more than the cap on a day. Whatever does not fit —
+ *    `total_hours - working_days × cap` — is LEFTOVER overtime: reported via
+ *    `overtime.leftover_hours` and an `action` warning, never placed
+ *    automatically. A person assigns it to dates afterwards
+ *    (`applyOvertimeAssignments`), which is the only thing that ever writes
+ *    `ScheduleDay.overtime_hours`.
  * 8. A day over `max_continuous_hours` is split into `ceil(hours / max_continuous)`
  *    blocks with a `break_minutes` break between each, all inside the same day.
  *    Pauze is the sum of those breaks (0 for a short day, 30 for one, 60 for two).
+ *    This is computed over the day's WHOLE worked span — regular hours plus any
+ *    assigned overtime — so an 8 + 4 day gets the breaks a 12-hour day needs.
  * 9. Begintijd is the client's `work_start_time`; Eindtijd is start + worked
  *    minutes + pauze. Running past `work_end_time` is a warning, not an error —
- *    the window is a default, not a hard cap (the hard cap is max_hours_per_day).
+ *    the window is a default, not a hard cap (the hard cap is max_hours_per_day,
+ *    and it applies to the generated hours; assigned overtime is a human
+ *    override of exactly that, so it may legitimately push a day past it).
  */
 
 import type { PublicHoliday } from "./public-holiday";
@@ -59,7 +61,9 @@ import type {
   ScheduleWarning,
   ScheduleWarningCode,
   ScheduleWarningKind,
+  OvertimeAssignment,
 } from "./schedule-generator";
+import type { ScheduleRules } from "./schedule-rules";
 
 /** ISO weekday (1 = Monday) → Dutch name, as printed in the "Dag" column. */
 export const DUTCH_WEEKDAYS = [
@@ -212,7 +216,7 @@ export function breakCountForDay(hours: number, maxContinuousHours: number): num
  * re-render path) without inventing an employee or a rate.
  */
 export function generateMonthlyScheduleData(
-  input: Pick<ScheduleGenerationInput, "rules" | "request" | "holidays">,
+  input: Pick<ScheduleGenerationInput, "rules" | "request" | "holidays" | "existing_overtime">,
 ): GeneratedSchedule {
   const { rules, request, holidays } = input;
 
@@ -251,120 +255,264 @@ export function generateMonthlyScheduleData(
     warn("no_working_days", "input", "working_days is 0, so no working days could be selected.");
   }
 
-  // Rule 7: widen the selection before the cap is ever violated. Widening means
-  // re-spreading over a bigger n, not appending days at the end, so the extra
-  // load stays evenly distributed across the month.
-  // `working_days: 0` is not "as few days as possible", it is "no working days":
-  // widening there would schedule days the caller explicitly ruled out, so the
-  // hours are reported as unscheduled instead.
+  // Rule 7: the cap is HARD and the day count is fixed at what was requested.
+  // Nothing here grows the selection — hours that do not fit become leftover
+  // overtime for a person to place, which is what `distributeHours` reports as
+  // `unplacedCents`.
   const capPerDay = Math.max(0, rules.max_hours_per_day);
-
-  // Sanity-check the numbers AS TYPED, before any expansion. The generator will
-  // happily spread 20 hours over 2 requested days across 3 real ones and stay
-  // under the cap, so nothing downstream would ever mention it — but
-  // "20 hours, 2 days" is far more often a typo than an intention, and the
-  // client wants to see it either way. This is independent of, and additional
-  // to, the expansion and shortfall warnings below.
-  const enteredAverage = requestedDays > 0 ? request.total_hours / requestedDays : 0;
-  if (requestedDays > 0 && capPerDay > 0 && enteredAverage > capPerDay + EPS) {
-    warn("input_exceeds_daily_cap", "input",
-      `${formatHoursNL(request.total_hours)} hours over ${requestedDays} working ` +
-      `day${requestedDays === 1 ? "" : "s"} averages ${formatHoursNL(enteredAverage)} hours/day, ` +
-      `above the ${formatHoursNL(capPerDay)} h/day maximum — please confirm these numbers are correct.`,
-    );
-  }
-
-  const daysNeeded = capPerDay > 0 ? Math.ceil(Math.round(request.total_hours * 100) / (capPerDay * 100) - EPS) : 0;
-  let targetDays = Math.min(requestedDays, eligible.length);
-  if (requestedDays > 0 && daysNeeded > targetDays) {
-    const grown = Math.min(daysNeeded, eligible.length);
-    if (grown > targetDays) {
-      warn("days_expanded", "info",
-        `${grown - targetDays} extra working day${grown - targetDays === 1 ? "" : "s"} added beyond the ` +
-        `${requestedDays} requested: ${request.total_hours} hours do not fit in ` +
-        `${targetDays} day${targetDays === 1 ? "" : "s"} at ${rules.max_hours_per_day} h/day.`,
-      );
-      targetDays = grown;
-    }
-  }
-
+  const targetDays = Math.min(requestedDays, eligible.length);
   const workingDays = selectEvenlySpreadDays(eligible, targetDays);
 
   const { hours: perDay, unplacedCents } = distributeHours(request.total_hours, workingDays.length, capPerDay);
-  if (unplacedCents > 0) {
-    warn("hours_unplaced", "capacity",
-      `${(unplacedCents / 100).toFixed(2)} hours could not be scheduled: the month has only ` +
-      `${eligible.length} eligible working day${eligible.length === 1 ? "" : "s"} at ` +
-      `${rules.max_hours_per_day} h/day.`,
-    );
-  }
+
+  const regularByDate = new Map<string, number>();
+  workingDays.forEach((day, i) => {
+    const hours = perDay[i] ?? 0;
+    if (hours > 0) regularByDate.set(day.date, hours);
+  });
+
+  const base = composeSchedule({
+    all,
+    holidayByDate,
+    regularByDate,
+    overtimeByDate: new Map(),
+    rules,
+    requestedHours: request.total_hours,
+    leftoverHours: unplacedCents / 100,
+    requestedDays,
+    structuralWarnings: warningList,
+  });
+
+  // A re-generation carries the person's existing assignments back in rather
+  // than dropping them; `applyOvertimeAssignments` re-checks them against the
+  // new leftover and flags any mismatch.
+  const carried = input.existing_overtime ?? [];
+  return carried.length > 0 ? applyOvertimeAssignments(base, carried, rules) : base;
+}
+
+/* ── composing days, shifts, totals and the derived warnings ─────────────── */
+
+interface ComposeInput {
+  all: Array<{ ms: number; date: string; weekday: number }>;
+  holidayByDate: Map<string, PublicHoliday>;
+  /** Distributed hours per date. */
+  regularByDate: Map<string, number>;
+  /** Human-assigned overtime per date. */
+  overtimeByDate: Map<string, number>;
+  rules: ScheduleRules;
+  requestedHours: number;
+  /** Hours the capped days could not hold. */
+  leftoverHours: number;
+  requestedDays: number;
+  /** Warnings decided before composition (holidays, day-count problems). */
+  structuralWarnings: ScheduleWarning[];
+}
+
+/**
+ * Build the month's rows from "how many regular hours" + "how much assigned
+ * overtime" per date. Shared by generation and by re-assignment so a day's
+ * times, breaks and the derived warnings are computed in exactly one place.
+ */
+function composeSchedule(input: ComposeInput): GeneratedSchedule {
+  const {
+    all, holidayByDate, regularByDate, overtimeByDate, rules,
+    requestedHours, leftoverHours, requestedDays, structuralWarnings,
+  } = input;
+
+  const warningList: ScheduleWarning[] = [...structuralWarnings];
+  const warn = (code: ScheduleWarningCode, kind: ScheduleWarningKind, message: string) => {
+    warningList.push({ code, kind, message });
+  };
 
   const startMinutes = clockToMinutes(rules.work_start_time) ?? 8 * 60;
   const windowEnd = clockToMinutes(rules.work_end_time);
 
-  const plannedByDate = new Map<string, { hours: number; breakMinutes: number; start: string; end: string; endMinutes: number }>();
-  workingDays.forEach((day, i) => {
-    const hours = perDay[i] ?? 0;
-    if (hours <= 0) return;
-    const breakMinutes = breakCountForDay(hours, rules.max_continuous_hours) * rules.break_minutes;
-    // Truncated, not rounded: 3,33 h is 199 minutes of work, so 07:00 + pauze
-    // ends at 10:49 — the same arithmetic the reference timesheet uses.
-    const workedMinutes = Math.floor(hours * 60 + 1e-6);
-    const endMinutes = startMinutes + workedMinutes + breakMinutes;
-    plannedByDate.set(day.date, {
-      hours,
-      breakMinutes,
-      start: minutesToClock(startMinutes),
-      end: minutesToClock(endMinutes),
-      endMinutes,
-    });
-  });
-
-  const overruns = [...plannedByDate.values()].filter((p) => windowEnd != null && p.endMinutes > windowEnd);
-  if (overruns.length > 0 && windowEnd != null) {
-    const latest = minutesToClock(Math.max(...overruns.map((p) => p.endMinutes)));
-    warn("window_overrun", "info",
-      `${overruns.length} day${overruns.length === 1 ? "" : "s"} end after the client's ` +
-      `${rules.work_end_time} window (latest ${latest}).`,
-    );
-  }
-
   const days: ScheduleDay[] = all.map((d) => {
     const dayName = DUTCH_WEEKDAYS[d.weekday - 1];
-    const planned = plannedByDate.get(d.date);
-    if (planned) {
+    const holiday = holidayByDate.get(d.date);
+    const hours = regularByDate.get(d.date) ?? 0;
+    const overtime = overtimeByDate.get(d.date) ?? 0;
+    const kind: ScheduleDay["kind"] = hours > 0
+      ? "worked"
+      : d.weekday > LAST_WORKING_WEEKDAY ? "weekend" : holiday ? "holiday" : "free";
+
+    // A date with only assigned overtime still prints times: someone worked it.
+    if (hours <= 0 && overtime <= 0) {
       return {
-        date: d.date, weekday: d.weekday, day_name: dayName, kind: "worked",
-        holiday_name: null,
-        start: planned.start, end: planned.end,
-        break_minutes: planned.breakMinutes, hours: planned.hours,
+        date: d.date, weekday: d.weekday, day_name: dayName, kind,
+        holiday_name: holiday?.name ?? null,
+        start: null, end: null, break_minutes: 0, hours: 0, overtime_hours: 0,
       };
     }
-    const holiday = holidayByDate.get(d.date);
-    const kind = d.weekday > LAST_WORKING_WEEKDAY ? "weekend" : holiday ? "holiday" : "free";
+
+    // Breaks span the WHOLE worked day, so 8 regular + 4 overtime gets the two
+    // breaks a 12-hour day needs, not the one its 8 regular hours would.
+    const span = hours + overtime;
+    const breakMinutes = breakCountForDay(span, rules.max_continuous_hours) * rules.break_minutes;
+    // Truncated, not rounded: 3,33 h is 199 minutes of work, so 07:00 + pauze
+    // ends at 10:49 — the same arithmetic the reference timesheet uses.
+    const endMinutes = startMinutes + Math.floor(span * 60 + 1e-6) + breakMinutes;
     return {
       date: d.date, weekday: d.weekday, day_name: dayName, kind,
       holiday_name: holiday?.name ?? null,
-      start: null, end: null, break_minutes: 0, hours: 0,
-    };
+      start: minutesToClock(startMinutes),
+      end: minutesToClock(endMinutes),
+      break_minutes: breakMinutes,
+      hours,
+      overtime_hours: overtime,
+      _endMinutes: endMinutes,
+    } as ScheduleDay & { _endMinutes: number };
   });
 
-  const shifts: ScheduleShift[] = days
-    .filter((d) => d.kind === "worked")
-    .map((d) => ({ date: d.date, start: d.start!, end: d.end!, hours: d.hours, break_minutes: d.break_minutes }));
+  const overruns = days
+    .map((d) => (d as ScheduleDay & { _endMinutes?: number })._endMinutes)
+    .filter((m): m is number => m != null && windowEnd != null && m > windowEnd);
+  if (overruns.length > 0 && windowEnd != null) {
+    warn("window_overrun", "info",
+      `${overruns.length} day${overruns.length === 1 ? "" : "s"} end after the client's ` +
+      `${rules.work_end_time} window (latest ${minutesToClock(Math.max(...overruns))}).`,
+    );
+  }
+  // Scratch field for the overrun check only — never part of the stored shape.
+  for (const d of days) delete (d as ScheduleDay & { _endMinutes?: number })._endMinutes;
 
-  // Summed in cents so the total is exactly the sum of the printed rows.
-  const totalHours = shifts.reduce((sum, s) => sum + Math.round(s.hours * 100), 0) / 100;
+  const shifts: ScheduleShift[] = days
+    .filter((d) => d.hours > 0 || d.overtime_hours > 0)
+    .map((d) => ({
+      date: d.date, start: d.start!, end: d.end!,
+      hours: d.hours, overtime_hours: d.overtime_hours, break_minutes: d.break_minutes,
+    }));
+
+  // Summed in cents so the totals are exactly the sum of the printed rows.
+  const cents = (pick: (d: ScheduleDay) => number) =>
+    days.reduce((sum, d) => sum + Math.round(pick(d) * 100), 0) / 100;
+  const totalHours = cents((d) => d.hours);
+  const assignedHours = cents((d) => d.overtime_hours);
+
+  const assignments: OvertimeAssignment[] = days
+    .filter((d) => d.overtime_hours > 0)
+    .map((d) => ({ date: d.date, hours: d.overtime_hours }));
+
+  const unassigned = Math.max(0, Math.round((leftoverHours - assignedHours) * 100)) / 100;
+  if (unassigned > 0) {
+    warn("overtime_unassigned", "action",
+      `${formatHoursNL(unassigned)} hours of overtime could not be scheduled within the ` +
+      `requested ${requestedDays} day${requestedDays === 1 ? "" : "s"} at ` +
+      `${formatHoursNL(rules.max_hours_per_day)}h/day — please assign them.`,
+    );
+  }
 
   return {
     shifts,
     days,
     total_hours: totalHours,
-    requested_hours: request.total_hours,
-    totals: { hours: totalHours, overtime_hours: 0, km_allowance: 0, worked_days: shifts.length },
+    requested_hours: requestedHours,
+    totals: {
+      hours: totalHours,
+      overtime_hours: assignedHours,
+      km_allowance: 0,
+      worked_days: shifts.length,
+    },
+    overtime: {
+      leftover_hours: leftoverHours,
+      assigned_hours: assignedHours,
+      unassigned_hours: unassigned,
+      assignments,
+    },
     warnings: warningList.map((w) => w.message),
     warning_details: warningList,
   };
+}
+
+/* ── assigning leftover overtime ─────────────────────────────────────────── */
+
+/** Merge duplicate dates, drop non-positive entries, round to whole cents. */
+export function normaliseOvertimeAssignments(assignments: OvertimeAssignment[]): OvertimeAssignment[] {
+  const byDate = new Map<string, number>();
+  for (const a of assignments) {
+    const hours = Number(a.hours);
+    if (!Number.isFinite(hours) || hours <= 0) continue;
+    byDate.set(a.date, Math.round(((byDate.get(a.date) ?? 0) + hours) * 100) / 100);
+  }
+  return [...byDate.entries()]
+    .map(([date, hours]) => ({ date, hours }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+/**
+ * Place manually assigned overtime onto a generated schedule.
+ *
+ * A pure transform on a finished `GeneratedSchedule`: it re-derives each day's
+ * times and breaks over the new worked span, recomputes the totals and the
+ * derived warnings, and REPLACES any previous assignment set (so the caller
+ * always sends the full list — that is also how an assignment is cleared).
+ *
+ * Everything it needs is already in the schedule: `days[].hours` is the
+ * distributed part, which assignment never changes, and the month's leftover is
+ * `requested_hours - total_hours`.
+ */
+export function applyOvertimeAssignments(
+  schedule: GeneratedSchedule,
+  assignments: OvertimeAssignment[],
+  rules: ScheduleRules,
+): GeneratedSchedule {
+  const normalised = normaliseOvertimeAssignments(assignments);
+  const inMonth = new Set(schedule.days.map((d) => d.date));
+
+  const kept = normalised.filter((a) => inMonth.has(a.date));
+  const dropped = normalised.filter((a) => !inMonth.has(a.date));
+
+  // Structural warnings survive re-assignment untouched; the derived ones
+  // (window overrun, unassigned overtime) are recomputed by composeSchedule,
+  // and the re-generation flag is re-evaluated below.
+  const DERIVED = new Set<ScheduleWarningCode>([
+    "window_overrun", "overtime_unassigned", "overtime_outside_month", "overtime_reassign_needed",
+  ]);
+  const structural = schedule.warning_details.filter((w) => !DERIVED.has(w.code));
+
+  if (dropped.length > 0) {
+    structural.push({
+      code: "overtime_outside_month",
+      kind: "input",
+      message:
+        `${dropped.length} overtime assignment${dropped.length === 1 ? "" : "s"} fell outside this ` +
+        `month and ${dropped.length === 1 ? "was" : "were"} dropped: ${dropped.map((a) => a.date).join(", ")}.`,
+    });
+  }
+
+  const leftover = Math.round((schedule.requested_hours - schedule.total_hours) * 100) / 100;
+  const assignedHours = kept.reduce((sum, a) => sum + Math.round(a.hours * 100), 0) / 100;
+
+  // The person assigned more than the month actually spilled over — almost
+  // always because the schedule was re-generated with different numbers
+  // underneath an existing assignment. Flag it rather than silently trimming.
+  const overAssigned = Math.round((assignedHours - leftover) * 100) / 100;
+  if (overAssigned > 0) {
+    structural.push({
+      code: "overtime_reassign_needed",
+      kind: "action",
+      message:
+        `${formatHoursNL(assignedHours)} hours of overtime are assigned but only ` +
+        `${formatHoursNL(leftover)} spilled over${leftover === 0 ? "" : " this time"} — ` +
+        "the schedule was re-generated with different numbers. Please review the assignment.",
+    });
+  }
+
+  return composeSchedule({
+    all: schedule.days.map((d) => ({ ms: 0, date: d.date, weekday: d.weekday })),
+    holidayByDate: new Map(
+      schedule.days
+        .filter((d) => d.holiday_name)
+        .map((d) => [d.date, { date: d.date, name: d.holiday_name! } as PublicHoliday]),
+    ),
+    regularByDate: new Map(schedule.days.filter((d) => d.hours > 0).map((d) => [d.date, d.hours])),
+    overtimeByDate: new Map(kept.map((a) => [a.date, a.hours])),
+    rules,
+    requestedHours: schedule.requested_hours,
+    leftoverHours: leftover,
+    requestedDays: schedule.days.filter((d) => d.hours > 0).length || 0,
+    structuralWarnings: structural,
+  });
 }
 
 export const monthlyScheduleGenerator: ScheduleGenerator = {

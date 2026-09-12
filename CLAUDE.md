@@ -518,6 +518,7 @@ or the PDF reads them — a timesheet schedules time, it never costs it. Don't
 | `GET/PATCH/DELETE /api/clients/:id/employees/:employeeId` | read / update / delete |
 | `GET/PUT /api/clients/:id/schedule-rules` | read (defaults when unsaved) / replace |
 | `GET/POST /api/clients/:id/employees/:employeeId/schedule?year=&month=` | read / generate one month (POST body: `year`, `month`, `total_hours`, optional `working_days` — both amounts are MONTH totals) |
+| `PUT /api/clients/:id/employees/:employeeId/schedule/overtime` | assign leftover overtime (body: `year`, `month`, `assignments:[{date,hours}]`) — a FULL REPLACE, `[]` clears |
 | `GET /api/clients/:id/employees/:employeeId/schedule/pdf?year=&month=` | the printable Urenlijst (`?inline=1` to preview) |
 
 `PATCH` with exactly `{ "active": false }` routes through the **deactivate** use
@@ -565,21 +566,12 @@ The rules, in order:
    works every one of them and says so in `warnings`.
 5. **Hours** are split evenly to the CENT over the selected days, remainder on
    the LAST days, so `days[]` always sums back to `total_hours` exactly.
-5b. **The numbers as typed are sanity-checked first.** If
-   `total_hours / working_days` exceeds `max_hours_per_day`, an `input` warning
-   fires ("20 hours over 2 working days averages 10 hours/day…"). This is
-   ADDITIONAL to the expansion below, not a replacement: the generator still
-   spreads those 20 hours over 3 real days and stays under the cap, so without
-   this the likely typo would never be surfaced. The threshold is always the
-   client's configured cap, never a literal 8.
-6. **`max_hours_per_day` is never violated.** If the requested days can't hold the
-   hours, the selection is RE-SPREAD over more days (`ceil(total / cap)`, the same
-   even spread with a bigger n — not days appended at the end), so the extra load
-   stays distributed across the month. Only when the month runs out of eligible
-   days does the result fall short — reported in `warnings` with
-   `requested_hours` kept alongside `total_hours`, never silently dropped.
-   `working_days: 0` is the one case that does NOT widen: zero means "no working
-   days", so the hours are reported as unscheduled instead.
+6. **`max_hours_per_day` is a HARD cap and the day count is FIXED.** The
+   generator never puts more than the cap on a day and never invents extra days
+   to make hours fit (an earlier version auto-expanded; that is gone). Whatever
+   `total_hours` exceeds `working_days × cap` becomes LEFTOVER OVERTIME — see
+   below. `requested_hours` is kept alongside `total_hours` so the gap is always
+   visible in the record.
 7. **Breaks:** `ceil(hours / max_continuous_hours) - 1` breaks of `break_minutes`,
    inside the same day. Pauze = their sum (0 for a short day, 30 for one, 60 for
    two). A 3-hour day therefore has NO break, unlike the hand-filled reference.
@@ -589,24 +581,55 @@ The rules, in order:
    `work_end_time` is a **warning**, not a rejection; the hard cap is
    `max_hours_per_day`. A night-shift window (22:00 →) wraps past midnight.
 
+#### Leftover overtime — the cap-and-assign flow
+
+The generator caps every day and hands the remainder to a HUMAN. It never
+places overtime itself.
+
+- **`ScheduleDay.overtime_hours`** is the shape: a second number per day, kept
+  deliberately apart from `hours`. `hours` is what the algorithm distributed
+  (never above the cap); `overtime_hours` is what a person assigned. They print
+  in different columns — Gewerkte uren vs Overuren — so never merge them.
+- **`GeneratedSchedule.overtime`** = `{leftover_hours, assigned_hours,
+  unassigned_hours, assignments[]}`. `leftover_hours` is
+  `requested_hours − total_hours` and does NOT shrink as assignments are made;
+  `unassigned_hours` is what is still outstanding.
+- **`applyOvertimeAssignments(schedule, assignments, rules)`** (pure, domain) is
+  the only thing that writes `overtime_hours`. It is a FULL REPLACE of the
+  month's set — `[]` clears it, several entries split the leftover across dates
+  — which is what makes `PUT …/schedule/overtime` idempotent. It re-derives the
+  affected days' times/breaks and the totals, and works off the finished
+  schedule alone (the distributed hours are in `days[].hours` and the leftover
+  is `requested_hours − total_hours`).
+- **Breaks span the whole worked day**: `breakCountForDay(hours + overtime, …)`.
+  So 8 regular + 4 assigned is a 12-hour span → two breaks, 08:00 → 21:00, not
+  the single break its 8 regular hours alone would earn.
+- **Overtime may land on any date in the month**, including one the plan left
+  free — that date then prints times and counts toward `totals.worked_days`,
+  with `hours` still 0. A date outside the month is dropped with
+  `overtime_outside_month`.
+- **Re-generation PRESERVES assignments.** The use case reads the stored
+  schedule and passes `existing_overtime` into the generator, which re-applies
+  them to the same dates. When the new numbers no longer leave room —
+  re-generating 20 h/2 d as 16 h/2 d, so nothing spills any more — the
+  assignment is KEPT and `overtime_reassign_needed` (kind `action`) fires:
+  "4 hours of overtime are assigned but only 0 spilled over… Please review."
+  It is never silently dropped or trimmed. An assignment whose date is not in
+  the new month is dropped with `overtime_outside_month`.
+
 **Warnings are classified, not just strings.** `warning_details` is a list of
 `{code, kind, message}`; `warnings` stays as the flat `message` array so
 schedules stored before the classification existed still render. `kind` drives
-the dashboard's styling and is the point of the whole structure:
-- `input` — the numbers as typed look wrong (`input_exceeds_daily_cap`,
-  `no_working_days`). Rendered as a bordered `role="alert"` block titled "Check
-  the input", because the generator usually compensates and the mistake would
-  otherwise be invisible.
+the dashboard's styling:
+- `action` — the schedule is INCOMPLETE until a person acts
+  (`overtime_unassigned`, `overtime_reassign_needed`). Rendered as a bordered
+  `role="alert"` block titled "Needs your input", and the modal renders the
+  assignment form for exactly these.
+- `input` — the numbers as typed look wrong (`no_working_days`,
+  `overtime_outside_month`).
 - `capacity` — the month genuinely cannot hold the request
-  (`hours_unplaced`, `days_requested_exceed_month`). Titled "Month is full";
-  the input may be perfectly correct.
-- `info` — handled automatically (`days_expanded`, `holidays_skipped`,
-  `window_overrun`).
-
-Note `days_expanded` can only occur alongside `input_exceeds_daily_cap` — the
-expansion condition `ceil(total / cap) > requested` rearranges to
-`total / requested > cap` — which is exactly why the explicit input warning was
-needed: the expansion note reads as "handled", not "check this".
+  (`days_requested_exceed_month`). Titled "Month is full".
+- `info` — handled automatically (`holidays_skipped`, `window_overrun`).
 
 `totals` carries `hours`, `worked_days`, and the structural zeros
 `overtime_hours` / `km_allowance`. Both the on-screen table and the PDF print
@@ -627,7 +650,8 @@ green/grey legend, one row per calendar day (worked = green,
 weekend = grey with "Weekend" in Bijzonderheden, holidays + unselected weekdays
 blank), a `TOTAAL <MAAND> <JAAR>` row, and two **blank** signature blocks. Row
 geometry is sized so a 31-day month fits on ONE page — don't grow the header
-without re-checking that. Overuren / Km vergoeding are structural zeros.
+without re-checking that. Km vergoeding is still a structural zero; Overuren is
+real (see "Leftover overtime" above).
 
 - The header names the worker and the **Opdrachtgever** (the client) and nothing
   else. There is deliberately **no Uitzendbureau line** — it was removed along
