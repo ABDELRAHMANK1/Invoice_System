@@ -1,10 +1,10 @@
 /**
  * Per-client scheduling rules — the constraints the generator must respect.
- * Stored one row per client in `client_schedule_rules` (migrations 011 + 012); a
- * client with no row falls back to DEFAULT_SCHEDULE_RULES below.
+ * Stored one row per client in `client_schedule_rules` (migrations 011 + 012 +
+ * 015); a client with no row falls back to DEFAULT_SCHEDULE_RULES below.
  *
- * These defaults mirror the column defaults in migrations 011/012. If you change
- * one, change the other.
+ * These defaults mirror the column defaults in migrations 011/012/015. If you
+ * change one, change the other.
  */
 
 /** Wall-clock "HH:MM". The `time` columns are wall clock, never an instant. */
@@ -35,7 +35,9 @@ export type ScheduleRulesInput = Pick<
 export const DEFAULT_SCHEDULE_RULES: ScheduleRulesInput = {
   max_continuous_hours: 4,
   break_minutes: 30,
-  max_hours_per_day: 10,
+  // 8, not 10: the client confirmed a worker is never scheduled more than eight
+  // hours in a day (migration 015, which also lowers the column default).
+  max_hours_per_day: 8,
   work_start_time: "08:00",
   work_end_time: "17:00",
 };

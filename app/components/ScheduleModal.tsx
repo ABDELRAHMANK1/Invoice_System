@@ -4,7 +4,14 @@ import { useCallback, useEffect, useState } from "react";
 import { Icon, I } from "@/app/components/Icon";
 import { useToast } from "@/app/components/Toast";
 import { DEFAULT_WORKING_DAYS, DUTCH_MONTHS, formatHoursNL } from "@/lib/workforce/domain";
-import type { Employee, EmployeeMonthlySchedule, ScheduleDay, ScheduleTotals } from "@/lib/workforce/domain";
+import type {
+  Employee,
+  EmployeeMonthlySchedule,
+  ScheduleDay,
+  ScheduleTotals,
+  ScheduleWarning,
+  ScheduleWarningKind,
+} from "@/lib/workforce/domain";
 
 /**
  * Generate + review one employee's monthly Urenlijst.
@@ -17,7 +24,27 @@ import type { Employee, EmployeeMonthlySchedule, ScheduleDay, ScheduleTotals } f
 const EMPTY_TOTALS: ScheduleTotals = { hours: 0, overtime_hours: 0, km_allowance: 0, worked_days: 0 };
 
 /** The generator's output as it comes back out of `schedule_data`. */
-type ScheduleData = { days?: ScheduleDay[]; totals?: ScheduleTotals; warnings?: string[] };
+type ScheduleData = {
+  days?: ScheduleDay[];
+  totals?: ScheduleTotals;
+  warnings?: string[];
+  warning_details?: ScheduleWarning[];
+};
+
+/**
+ * How each class of warning is presented. The distinction matters to the reader:
+ * an `input` warning means "go re-check what you typed" even though the
+ * generator compensated, while a `capacity` one means the input may be right and
+ * the month simply cannot hold it. Styling them identically buried the first
+ * kind, which is the one most likely to be a mistake.
+ */
+const WARNING_STYLES: Record<ScheduleWarningKind, { label: string; icon: string | string[]; bg: string; fg: string }> = {
+  input:    { label: "Check the input", icon: I.alert, bg: "var(--danger-soft)", fg: "var(--danger)" },
+  capacity: { label: "Month is full",   icon: I.calendar, bg: "var(--warn-soft)", fg: "var(--warn)" },
+  info:     { label: "Adjusted",        icon: I.check, bg: "var(--surface-2)", fg: "var(--muted)" },
+};
+
+const WARNING_ORDER: ScheduleWarningKind[] = ["input", "capacity", "info"];
 
 interface ScheduleModalProps {
   clientId: string;
@@ -123,7 +150,13 @@ export default function ScheduleModal({ clientId, employees, initialEmployeeId, 
   const data = (schedule?.schedule_data ?? {}) as ScheduleData;
   const days = data.days ?? [];
   const totals = data.totals ?? EMPTY_TOTALS;
-  const warnings = data.warnings ?? [];
+  // Schedules generated before warnings were classified only have the flat
+  // strings; show them as plain notes rather than dropping them.
+  const warnings: ScheduleWarning[] = data.warning_details
+    ?? (data.warnings ?? []).map((message) => ({ code: "holidays_skipped" as const, kind: "info" as const, message }));
+  const warningsByKind = WARNING_ORDER
+    .map((kind) => ({ kind, items: warnings.filter((w) => w.kind === kind) }))
+    .filter((group) => group.items.length > 0);
 
   return (
     <div className="modal-backdrop" onClick={loading ? undefined : onClose}>
@@ -203,11 +236,30 @@ export default function ScheduleModal({ clientId, employees, initialEmployeeId, 
             </div>
           ) : (
             <>
-              {warnings.length > 0 && (
-                <ul style={{ margin: "0 0 12px 0", padding: "10px 12px 10px 28px", borderRadius: "var(--r-sm)", background: "var(--warn-soft)", color: "var(--warn)", fontSize: 12.5 }}>
-                  {warnings.map((w, i) => <li key={i}>{w}</li>)}
-                </ul>
-              )}
+              {warningsByKind.map(({ kind, items }) => {
+                const style = WARNING_STYLES[kind];
+                return (
+                  <div
+                    key={kind}
+                    role={kind === "input" ? "alert" : undefined}
+                    style={{
+                      display: "flex", gap: 8, alignItems: "flex-start",
+                      margin: "0 0 8px 0", padding: "10px 12px",
+                      borderRadius: "var(--r-sm)",
+                      background: style.bg, color: style.fg, fontSize: 12.5,
+                      border: kind === "input" ? "1px solid currentColor" : "1px solid transparent",
+                    }}
+                  >
+                    <Icon d={style.icon} size={14} />
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, marginBottom: items.length > 1 ? 4 : 2 }}>{style.label}</div>
+                      <ul style={{ margin: 0, padding: "0 0 0 16px" }}>
+                        {items.map((w) => <li key={w.code}>{w.message}</li>)}
+                      </ul>
+                    </div>
+                  </div>
+                );
+              })}
 
               <table className="t" style={{ width: "100%", fontSize: 12.5 }}>
                 <thead>

@@ -97,15 +97,15 @@ describe("dutch public holidays", () => {
 describe("schedule rules", () => {
   it("falls back to the documented defaults when nothing is stored", () => {
     expect(scheduleRulesOrDefaults("c1", null)).toEqual({ client_id: "c1", ...DEFAULT_SCHEDULE_RULES });
-    // These mirror the column defaults in migrations 011 + 012.
+    // These mirror the column defaults in migrations 011 + 012 + 015.
     expect(DEFAULT_SCHEDULE_RULES).toEqual({
-      max_continuous_hours: 4, break_minutes: 30, max_hours_per_day: 10,
+      max_continuous_hours: 4, break_minutes: 30, max_hours_per_day: 8,
       work_start_time: "08:00", work_end_time: "17:00",
     });
   });
 
   it("rejects a break threshold a working day can never reach", () => {
-    expect(scheduleRulesError({ ...DEFAULT_SCHEDULE_RULES, max_continuous_hours: 12, max_hours_per_day: 10 }))
+    expect(scheduleRulesError({ ...DEFAULT_SCHEDULE_RULES, max_continuous_hours: 12, max_hours_per_day: 8 }))
       .toMatch(/max_continuous_hours cannot exceed/);
     expect(scheduleRulesError(DEFAULT_SCHEDULE_RULES)).toBeNull();
   });

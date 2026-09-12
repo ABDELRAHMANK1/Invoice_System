@@ -75,6 +75,43 @@ export interface ScheduleTotals {
   worked_days: number;
 }
 
+/**
+ * What a warning is really telling the reader — the dashboard styles by this,
+ * because these three call for different reactions:
+ *   input    — the numbers AS TYPED look wrong; go re-check them. The generator
+ *              may well have compensated, but a likely data-entry mistake is
+ *              worth surfacing anyway.
+ *   capacity — the month genuinely cannot hold the request. The input may be
+ *              perfectly correct; the calendar is the limit.
+ *   info     — the generator handled something on its own; nothing to act on.
+ */
+export const SCHEDULE_WARNING_KINDS = ["input", "capacity", "info"] as const;
+export type ScheduleWarningKind = (typeof SCHEDULE_WARNING_KINDS)[number];
+
+export const SCHEDULE_WARNING_CODES = [
+  /** total_hours / working_days, as entered, is over max_hours_per_day. */
+  "input_exceeds_daily_cap",
+  /** working_days is 0 but hours were requested. */
+  "no_working_days",
+  /** More days requested than the month has eligible weekdays. */
+  "days_requested_exceed_month",
+  /** Hours that no eligible day could take. */
+  "hours_unplaced",
+  /** The selection grew past the request to respect the daily cap. */
+  "days_expanded",
+  /** Public holidays fell on weekdays and were skipped. */
+  "holidays_skipped",
+  /** A day ends after the client's work_end_time. */
+  "window_overrun",
+] as const;
+export type ScheduleWarningCode = (typeof SCHEDULE_WARNING_CODES)[number];
+
+export interface ScheduleWarning {
+  code: ScheduleWarningCode;
+  kind: ScheduleWarningKind;
+  message: string;
+}
+
 export interface GeneratedSchedule {
   shifts: ScheduleShift[];
   /** Every day of the month in date order — the timesheet's rows. */
@@ -84,8 +121,14 @@ export interface GeneratedSchedule {
   /** What the caller asked for, kept so a shortfall is visible in the record. */
   requested_hours: number;
   totals: ScheduleTotals;
-  /** Human-readable notes: hours that wouldn't fit, holidays skipped, … */
+  /**
+   * Human-readable notes: hours that wouldn't fit, holidays skipped, …
+   * Kept as flat strings so schedules generated before `warning_details`
+   * existed still render; it is exactly `warning_details.map(w => w.message)`.
+   */
   warnings: string[];
+  /** The same notes, classified — see `ScheduleWarning`. */
+  warning_details: ScheduleWarning[];
 }
 
 /**

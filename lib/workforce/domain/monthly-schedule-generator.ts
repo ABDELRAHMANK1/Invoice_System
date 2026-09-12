@@ -27,6 +27,11 @@
  *    are not positions that can be chosen.
  * 5. Asking for more days than the month has eligible weekdays works every one of
  *    them and says so in `warnings`.
+ * 5b. Before any of that, the numbers AS TYPED are sanity-checked:
+ *    `total_hours / working_days > max_hours_per_day` raises an `input` warning
+ *    ("20 hours over 2 days averages 10 h/day"). The generator still expands
+ *    into extra days as rule 7 describes — this warning is additional, not a
+ *    replacement, because the expansion hides what is usually a typo.
  * 6. `total_hours` is split evenly (to the cent) over the selected days; the
  *    remainder cents land on the LAST days, so the day totals always sum back to
  *    the request exactly.
@@ -51,6 +56,9 @@ import type {
   ScheduleGenerationInput,
   ScheduleGenerator,
   ScheduleShift,
+  ScheduleWarning,
+  ScheduleWarningCode,
+  ScheduleWarningKind,
 } from "./schedule-generator";
 
 /** ISO weekday (1 = Monday) → Dutch name, as printed in the "Dag" column. */
@@ -207,7 +215,14 @@ export function generateMonthlyScheduleData(
   input: Pick<ScheduleGenerationInput, "rules" | "request" | "holidays">,
 ): GeneratedSchedule {
   const { rules, request, holidays } = input;
-  const warnings: string[] = [];
+
+  // Warnings are collected classified (see ScheduleWarning) and flattened to
+  // `warnings` at the end, so the dashboard can style "check your input" apart
+  // from "the month is full" without pattern-matching on message text.
+  const warningList: ScheduleWarning[] = [];
+  const warn = (code: ScheduleWarningCode, kind: ScheduleWarningKind, message: string) => {
+    warningList.push({ code, kind, message });
+  };
 
   const holidayByDate = new Map<string, PublicHoliday>(holidays.map((h) => [h.date, h]));
   const all = monthDays(request.year, request.month);
@@ -219,21 +234,21 @@ export function generateMonthlyScheduleData(
     .filter((d) => d.weekday <= LAST_WORKING_WEEKDAY && holidayByDate.has(d.date))
     .map((d) => `${holidayByDate.get(d.date)!.name} (${d.date})`);
   if (skippedHolidays.length > 0) {
-    warnings.push(`Public holidays skipped: ${skippedHolidays.join(", ")}.`);
+    warn("holidays_skipped", "info", `Public holidays skipped: ${skippedHolidays.join(", ")}.`);
   }
 
   // `working_days` counts the WHOLE MONTH, so it is bounded by the month's
   // eligible weekdays rather than by the length of a week.
   const requestedDays = Math.max(0, Math.trunc(request.working_days));
   if (requestedDays > eligible.length) {
-    warnings.push(
+    warn("days_requested_exceed_month", "capacity",
       `${requestedDays} working days requested but the month has only ${eligible.length} ` +
       `eligible weekday${eligible.length === 1 ? "" : "s"} (weekends and public holidays excluded), ` +
       "so every one of them is worked.",
     );
   }
   if (requestedDays === 0 && request.total_hours > 0) {
-    warnings.push("working_days is 0, so no working days could be selected.");
+    warn("no_working_days", "input", "working_days is 0, so no working days could be selected.");
   }
 
   // Rule 7: widen the selection before the cap is ever violated. Widening means
@@ -243,12 +258,28 @@ export function generateMonthlyScheduleData(
   // widening there would schedule days the caller explicitly ruled out, so the
   // hours are reported as unscheduled instead.
   const capPerDay = Math.max(0, rules.max_hours_per_day);
+
+  // Sanity-check the numbers AS TYPED, before any expansion. The generator will
+  // happily spread 20 hours over 2 requested days across 3 real ones and stay
+  // under the cap, so nothing downstream would ever mention it — but
+  // "20 hours, 2 days" is far more often a typo than an intention, and the
+  // client wants to see it either way. This is independent of, and additional
+  // to, the expansion and shortfall warnings below.
+  const enteredAverage = requestedDays > 0 ? request.total_hours / requestedDays : 0;
+  if (requestedDays > 0 && capPerDay > 0 && enteredAverage > capPerDay + EPS) {
+    warn("input_exceeds_daily_cap", "input",
+      `${formatHoursNL(request.total_hours)} hours over ${requestedDays} working ` +
+      `day${requestedDays === 1 ? "" : "s"} averages ${formatHoursNL(enteredAverage)} hours/day, ` +
+      `above the ${formatHoursNL(capPerDay)} h/day maximum — please confirm these numbers are correct.`,
+    );
+  }
+
   const daysNeeded = capPerDay > 0 ? Math.ceil(Math.round(request.total_hours * 100) / (capPerDay * 100) - EPS) : 0;
   let targetDays = Math.min(requestedDays, eligible.length);
   if (requestedDays > 0 && daysNeeded > targetDays) {
     const grown = Math.min(daysNeeded, eligible.length);
     if (grown > targetDays) {
-      warnings.push(
+      warn("days_expanded", "info",
         `${grown - targetDays} extra working day${grown - targetDays === 1 ? "" : "s"} added beyond the ` +
         `${requestedDays} requested: ${request.total_hours} hours do not fit in ` +
         `${targetDays} day${targetDays === 1 ? "" : "s"} at ${rules.max_hours_per_day} h/day.`,
@@ -261,7 +292,7 @@ export function generateMonthlyScheduleData(
 
   const { hours: perDay, unplacedCents } = distributeHours(request.total_hours, workingDays.length, capPerDay);
   if (unplacedCents > 0) {
-    warnings.push(
+    warn("hours_unplaced", "capacity",
       `${(unplacedCents / 100).toFixed(2)} hours could not be scheduled: the month has only ` +
       `${eligible.length} eligible working day${eligible.length === 1 ? "" : "s"} at ` +
       `${rules.max_hours_per_day} h/day.`,
@@ -292,7 +323,7 @@ export function generateMonthlyScheduleData(
   const overruns = [...plannedByDate.values()].filter((p) => windowEnd != null && p.endMinutes > windowEnd);
   if (overruns.length > 0 && windowEnd != null) {
     const latest = minutesToClock(Math.max(...overruns.map((p) => p.endMinutes)));
-    warnings.push(
+    warn("window_overrun", "info",
       `${overruns.length} day${overruns.length === 1 ? "" : "s"} end after the client's ` +
       `${rules.work_end_time} window (latest ${latest}).`,
     );
@@ -331,7 +362,8 @@ export function generateMonthlyScheduleData(
     total_hours: totalHours,
     requested_hours: request.total_hours,
     totals: { hours: totalHours, overtime_hours: 0, km_allowance: 0, worked_days: shifts.length },
-    warnings,
+    warnings: warningList.map((w) => w.message),
+    warning_details: warningList,
   };
 }
 
