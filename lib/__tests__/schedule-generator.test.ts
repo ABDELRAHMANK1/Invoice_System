@@ -59,6 +59,11 @@ function generate(over: {
   });
 }
 
+/** The classified warnings a generated schedule carries, by code. */
+function codes(schedule: GeneratedSchedule): string[] {
+  return schedule.warning_details.map((w) => w.code);
+}
+
 /** Sum of the printed rows, in cents — what "totals reconcile" means. */
 function sumWorkedCents(schedule: GeneratedSchedule): number {
   return schedule.days.reduce((sum, d) => sum + Math.round(d.hours * 100), 0);
@@ -350,11 +355,12 @@ describe("shift times", () => {
   });
 
   it("warns when a day runs past the client's window instead of refusing it", () => {
-    // 10 h a day: 3 blocks, 2 breaks, 08:00 → 19:00 — well past a 12:00 window.
-    const schedule = generate({ total_hours: 50, working_days: 5, rules: rules({ work_end_time: "12:00" }) });
-    expect(schedule.days.filter((d) => d.kind === "worked")[0]).toMatchObject({ end: "19:00", break_minutes: 60 });
+    // 8 h a day — exactly the cap, so no expansion: 2 blocks, one 30-min break,
+    // 08:00 → 16:30, well past a 12:00 window.
+    const schedule = generate({ total_hours: 40, working_days: 5, rules: rules({ work_end_time: "12:00" }) });
+    expect(schedule.days.filter((d) => d.kind === "worked")[0]).toMatchObject({ end: "16:30", break_minutes: 30 });
     expect(schedule.warnings.some((w) => /end after the client's 12:00 window/.test(w))).toBe(true);
-    expect(schedule.total_hours).toBe(50);
+    expect(schedule.total_hours).toBe(40);
   });
 });
 
@@ -389,5 +395,135 @@ describe("formatHoursNL", () => {
     expect(formatHoursNL(3.33)).toBe("3,33");
     expect(formatHoursNL(12.5)).toBe("12,5");
     expect(formatHoursNL(0)).toBe("0");
+  });
+});
+
+/* ── the 8-hour daily maximum ─────────────────────────────────────── */
+
+describe("the 8-hour daily cap", () => {
+  it("is the default, so an unconfigured client never gets a 9-hour day", () => {
+    expect(DEFAULT_SCHEDULE_RULES.max_hours_per_day).toBe(8);
+
+    // 160 hours with the default cap: no day may exceed 8, and the month needs
+    // at least ceil(160 / 8) = 20 days to hold them.
+    const schedule = generate({ working_days: 22, total_hours: 160 });
+    const worked = schedule.days.filter((d) => d.kind === "worked");
+    expect(Math.max(...worked.map((d) => d.hours))).toBeLessThanOrEqual(8);
+    expect(schedule.total_hours).toBe(160);
+  });
+
+  it("expands against 8 rather than the old 10", () => {
+    // 90 hours over 10 days is 9 h/day. Under the old 10-hour cap that fitted
+    // in the 10 requested days; against 8 it must grow to ceil(90 / 8) = 12.
+    const schedule = generate({ working_days: 10, total_hours: 90 });
+    const worked = schedule.days.filter((d) => d.kind === "worked");
+
+    expect(worked).toHaveLength(12);
+    expect(Math.max(...worked.map((d) => d.hours))).toBeLessThanOrEqual(8);
+    expect(schedule.total_hours).toBe(90);
+    expect(codes(schedule)).toContain("days_expanded");
+  });
+
+  it("still honours a client that has deliberately configured something else", () => {
+    // The cap is read from the client's rules, never hardcoded.
+    const schedule = generate({ working_days: 10, total_hours: 90, rules: rules({ max_hours_per_day: 9 }) });
+    expect(schedule.days.filter((d) => d.kind === "worked")).toHaveLength(10);
+    expect(codes(schedule)).not.toContain("days_expanded");
+  });
+
+  it("caps the month at 8 h/day when computing what will not fit", () => {
+    // June 2026 has 22 eligible weekdays → 176 h is the most the month can hold.
+    const schedule = generate({ working_days: 22, total_hours: 200 });
+    expect(schedule.total_hours).toBe(176);
+    expect(schedule.requested_hours).toBe(200);
+    expect(codes(schedule)).toContain("hours_unplaced");
+  });
+});
+
+/* ── the upfront "these numbers look wrong" warning ───────────────── */
+
+describe("input-average warning", () => {
+  it("fires for the 20-hours-over-2-days case, and still expands", () => {
+    const schedule = generate({ working_days: 2, total_hours: 20 });
+
+    // The warning the client asked for: raised from the numbers AS TYPED.
+    const entered = schedule.warning_details.find((w) => w.code === "input_exceeds_daily_cap");
+    expect(entered).toBeDefined();
+    expect(entered!.kind).toBe("input");
+    expect(entered!.message).toMatch(/20 hours over 2 working days averages 10 hours\/day/);
+    expect(entered!.message).toMatch(/above the 8 h\/day maximum/);
+    expect(entered!.message).toMatch(/please confirm these numbers are correct/);
+
+    // …and the existing behaviour is untouched: it still expands to
+    // ceil(20 / 8) = 3 days so no real day breaks the cap, and the hours
+    // reconcile exactly.
+    const worked = schedule.days.filter((d) => d.kind === "worked");
+    expect(worked).toHaveLength(3);
+    expect(Math.max(...worked.map((d) => d.hours))).toBeLessThanOrEqual(8);
+    expect(schedule.total_hours).toBe(20);
+    expect(codes(schedule)).toContain("days_expanded");
+  });
+
+  it("stays quiet when the entered average is within the cap", () => {
+    const schedule = generate({ working_days: 20, total_hours: 160 });   // exactly 8
+    expect(codes(schedule)).not.toContain("input_exceeds_daily_cap");
+
+    const under = generate({ working_days: 22, total_hours: 100 });      // ~4.5
+    expect(codes(under)).not.toContain("input_exceeds_daily_cap");
+  });
+
+  it("uses the client's configured cap, not a hardcoded 8", () => {
+    // 9 h/day entered: over an 8-hour cap, fine under a 10-hour one.
+    const strict = generate({ working_days: 10, total_hours: 90 });
+    expect(codes(strict)).toContain("input_exceeds_daily_cap");
+    expect(strict.warning_details.find((w) => w.code === "input_exceeds_daily_cap")!.message)
+      .toMatch(/above the 8 h\/day maximum/);
+
+    const lenient = generate({ working_days: 10, total_hours: 90, rules: rules({ max_hours_per_day: 10 }) });
+    expect(codes(lenient)).not.toContain("input_exceeds_daily_cap");
+  });
+
+  it("is independent of the capacity warnings — a full month with sane input", () => {
+    // The month is genuinely too small (200 h needs 25 days at 8 h/day, June
+    // 2026 has 22), but 200 over the 30 days entered averages 6,67 h/day, which
+    // is a perfectly reasonable thing to type. Capacity warnings fire; the
+    // input one does not.
+    const capacity = generate({ working_days: 30, total_hours: 200 });
+    expect(codes(capacity)).toContain("days_requested_exceed_month");
+    expect(codes(capacity)).toContain("hours_unplaced");
+    expect(codes(capacity)).not.toContain("input_exceeds_daily_cap");
+  });
+
+  it("expansion cannot occur WITHOUT a bad entered average — they are linked", () => {
+    // Worth pinning down, because it is why the new warning was needed at all.
+    // `days_expanded` requires ceil(total / cap) > requested, which rearranges
+    // to total / requested > cap — exactly the input warning's condition. So
+    // every expansion was already a suspicious input; it was just reported as
+    // "3 extra working days added", which reads as "handled", not "check this".
+    for (const [hours, days] of [[20, 2], [90, 10], [50, 5], [33, 4]] as const) {
+      const schedule = generate({ total_hours: hours, working_days: days });
+      if (codes(schedule).includes("days_expanded")) {
+        expect(codes(schedule)).toContain("input_exceeds_daily_cap");
+      }
+    }
+  });
+
+  it("does not fire when working_days is 0 (that has its own warning)", () => {
+    const schedule = generate({ working_days: 0, total_hours: 40 });
+    expect(codes(schedule)).toContain("no_working_days");
+    expect(codes(schedule)).not.toContain("input_exceeds_daily_cap");
+  });
+
+  it("classifies every warning, and `warnings` mirrors the details exactly", () => {
+    const schedule = generate({ working_days: 2, total_hours: 20 });
+    expect(schedule.warnings).toEqual(schedule.warning_details.map((w) => w.message));
+    for (const w of schedule.warning_details) {
+      expect(["input", "capacity", "info"]).toContain(w.kind);
+    }
+    // The two the dashboard must tell apart never share a kind.
+    const byCode = Object.fromEntries(schedule.warning_details.map((w) => [w.code, w.kind]));
+    expect(byCode["input_exceeds_daily_cap"]).toBe("input");
+    const full = generate({ working_days: 22, total_hours: 200 });
+    expect(full.warning_details.find((w) => w.code === "hours_unplaced")!.kind).toBe("capacity");
   });
 });

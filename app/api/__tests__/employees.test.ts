@@ -145,7 +145,7 @@ describe("schedule rules API", () => {
     const res = await rulesGet(getReq("http://localhost/api/clients/c1/schedule-rules"), params("c1"));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
-      client_id: "c1", max_continuous_hours: 4, break_minutes: 30, max_hours_per_day: 10,
+      client_id: "c1", max_continuous_hours: 4, break_minutes: 30, max_hours_per_day: 8,
       work_start_time: "08:00", work_end_time: "17:00",
     });
   });

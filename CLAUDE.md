@@ -423,7 +423,7 @@ this is intentional, do not change it.
   `010` clients.postcode + rsin, `011` employees + scheduling, `012` employees.function_title
   + client work-time window, `013` the days input becomes a MONTH total
   (see "Employees + monthly schedules"), `014` document_templates.kind +
-  mime_type (see "Document Templates").
+  mime_type (see "Document Templates"), `015` max_hours_per_day 10 → 8.
 
 ### Employees + monthly schedules (Phases 1–2)
 
@@ -450,6 +450,22 @@ or the PDF reads them — a timesheet schedules time, it never costs it. Don't
     the same kind of fact as `max_continuous_hours`, it reaches the generator
     through the `rules` field the `ScheduleGenerationInput` already carried, and
     `clients` is a wide table shared with the invoicing/export/n8n flows.
+  - `015_max_hours_per_day_8.sql` lowers the daily maximum from 10 to 8 — the
+    client confirmed a worker is never scheduled more than eight hours in a day.
+    It changes the column default AND updates existing rows, but **only those
+    with `max_hours_per_day = 10`**, the exact old default. There is no reliable
+    stored signal separating "never customised" from "deliberately set to 10"
+    (the only writer is the full-replace PUT, its form pre-fills the defaults,
+    and `created_at = updated_at` does not work as a proxy because the
+    repository's upsert always sends an explicit client-side `updated_at`), so
+    the value itself is the discriminator: 10 is either untouched or a
+    deliberate choice the new rule overrides anyway, and any other value is
+    unambiguously custom and left alone. Rows it lowers also get
+    `max_continuous_hours` clamped to 8 — the "a break must be reachable inside
+    a working day" rule lives in `scheduleRulesError`, NOT as a DB constraint,
+    so lowering the cap under a 9-hour threshold would otherwise leave a row the
+    database accepts but the next Save rejects. A row deliberately set above 8
+    (e.g. 12) is **kept** and listed by a `raise notice` for manual review.
   - `013_monthly_working_days.sql` renames **`employees.default_days_per_week` →
     `default_working_days`** and **`employee_monthly_schedules.days_per_week` →
     `working_days`**, widening both checks to 0..31. Both generation inputs are
@@ -489,7 +505,7 @@ or the PDF reads them — a timesheet schedules time, it never costs it. Don't
   Deliberately not a runtime holiday API — that would add a network failure mode
   to a serverless path for a calculation that hasn't changed since 1583.
 - **Schedule rules** are per client (`client_schedule_rules`, `client_id` is the
-  PK). Defaults — 4 continuous hours, 30-minute break, 10-hour daily cap,
+  PK). Defaults — 4 continuous hours, 30-minute break, **8-hour daily cap**,
   08:00–17:00 window — live in `DEFAULT_SCHEDULE_RULES` **and** as column
   defaults; keep the two in sync. A client with no row reads the defaults
   instead of a 404. `PUT` is a full replace, but the two work-window fields
@@ -549,6 +565,13 @@ The rules, in order:
    works every one of them and says so in `warnings`.
 5. **Hours** are split evenly to the CENT over the selected days, remainder on
    the LAST days, so `days[]` always sums back to `total_hours` exactly.
+5b. **The numbers as typed are sanity-checked first.** If
+   `total_hours / working_days` exceeds `max_hours_per_day`, an `input` warning
+   fires ("20 hours over 2 working days averages 10 hours/day…"). This is
+   ADDITIONAL to the expansion below, not a replacement: the generator still
+   spreads those 20 hours over 3 real days and stays under the cap, so without
+   this the likely typo would never be surfaced. The threshold is always the
+   client's configured cap, never a literal 8.
 6. **`max_hours_per_day` is never violated.** If the requested days can't hold the
    hours, the selection is RE-SPREAD over more days (`ceil(total / cap)`, the same
    even spread with a bigger n — not days appended at the end), so the extra load
@@ -565,6 +588,25 @@ The rules, in order:
    (3,33 h from 07:00 with a 30-min break ends 10:49). Running past
    `work_end_time` is a **warning**, not a rejection; the hard cap is
    `max_hours_per_day`. A night-shift window (22:00 →) wraps past midnight.
+
+**Warnings are classified, not just strings.** `warning_details` is a list of
+`{code, kind, message}`; `warnings` stays as the flat `message` array so
+schedules stored before the classification existed still render. `kind` drives
+the dashboard's styling and is the point of the whole structure:
+- `input` — the numbers as typed look wrong (`input_exceeds_daily_cap`,
+  `no_working_days`). Rendered as a bordered `role="alert"` block titled "Check
+  the input", because the generator usually compensates and the mistake would
+  otherwise be invisible.
+- `capacity` — the month genuinely cannot hold the request
+  (`hours_unplaced`, `days_requested_exceed_month`). Titled "Month is full";
+  the input may be perfectly correct.
+- `info` — handled automatically (`days_expanded`, `holidays_skipped`,
+  `window_overrun`).
+
+Note `days_expanded` can only occur alongside `input_exceeds_daily_cap` — the
+expansion condition `ceil(total / cap) > requested` rearranges to
+`total / requested > cap` — which is exactly why the explicit input warning was
+needed: the expansion note reads as "handled", not "check this".
 
 `totals` carries `hours`, `worked_days`, and the structural zeros
 `overtime_hours` / `km_allowance`. Both the on-screen table and the PDF print
