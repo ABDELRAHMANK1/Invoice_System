@@ -72,7 +72,22 @@ export const generateScheduleSchema = z.object({
   working_days: z.number().int().min(0).max(31).optional(),
 });
 
+/**
+ * Assigning leftover overtime. A FULL REPLACE of the month's assignment set:
+ * one entry puts it all on a date, several split it, and `[]` clears it.
+ */
+export const assignOvertimeSchema = z.object({
+  year:  z.number().int().min(2000).max(2100),
+  month: z.number().int().min(1).max(12),
+  assignments: z.array(z.object({
+    date:  z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD"),
+    // A day cannot hold more than 24 hours of anything.
+    hours: z.number().positive().max(24),
+  })).max(31),
+});
+
 export type CreateEmployeeBody = z.infer<typeof createEmployeeSchema>;
 export type PatchEmployeeBody = z.infer<typeof patchEmployeeSchema>;
 export type ScheduleRulesBody = z.infer<typeof scheduleRulesSchema>;
 export type GenerateScheduleBody = z.infer<typeof generateScheduleSchema>;
+export type AssignOvertimeBody = z.infer<typeof assignOvertimeSchema>;

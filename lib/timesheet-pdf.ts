@@ -13,8 +13,9 @@
 //   • two blank signature blocks, werknemer + werkgever, deliberately NOT
 //     pre-filled — they are signed by hand after printing
 //
-// Hours only: no rate, no amount, and the Overuren / Km-vergoeding columns are
-// structural zeros the back office fills in by hand.
+// Hours only: no rate, no amount. Km vergoeding stays a blank manual column;
+// Overuren is printed whenever a person has ASSIGNED overtime to that date
+// (ScheduleDay.overtime_hours), and left blank otherwise.
 
 import PDFDocument from "pdfkit";
 import { DUTCH_MONTHS, formatHoursNL } from "@/lib/workforce/domain";
@@ -170,7 +171,9 @@ export function buildTimesheetPdf(params: TimesheetPdfParams): Promise<Buffer> {
   }
 
   function drawDayRow(y: number, day: ScheduleDay) {
-    const bg = day.kind === "worked" ? WORKED_BG : day.kind === "weekend" ? WEEKEND_BG : null;
+    const bg = day.hours > 0 || day.overtime_hours > 0
+      ? WORKED_BG
+      : day.kind === "weekend" ? WEEKEND_BG : null;
     if (bg) doc.save().rect(MARGIN, y, TABLE_W, ROW_H).fill(bg).restore();
     doc.lineWidth(0.5).strokeColor(GRID)
       .moveTo(MARGIN, y + ROW_H).lineTo(MARGIN + TABLE_W, y + ROW_H).stroke();
@@ -179,12 +182,17 @@ export function buildTimesheetPdf(params: TimesheetPdfParams): Promise<Buffer> {
     cell(fmtDateNL(day.date), 0, ty);
     cell(day.day_name, 1, ty);
 
-    if (day.kind === "worked") {
+    // Times print whenever the day carries worked time — including a date that
+    // only ever received manually assigned overtime.
+    if (day.hours > 0 || day.overtime_hours > 0) {
       cell(day.start ?? "", 2, ty);
       cell(day.end ?? "", 3, ty);
       cell(String(day.break_minutes), 4, ty);
-      cell(formatHoursNL(day.hours), 5, ty);
-    } else if (day.kind === "weekend") {
+      if (day.hours > 0) cell(formatHoursNL(day.hours), 5, ty);
+      // Overuren: blank until someone assigns overtime to this date.
+      if (day.overtime_hours > 0) cell(formatHoursNL(day.overtime_hours), 6, ty);
+    }
+    if (day.kind === "weekend") {
       // Where the reference puts it: the time columns stay empty and "Weekend"
       // is written as the day's remark.
       cell("Weekend", 8, ty, { color: MUTED });

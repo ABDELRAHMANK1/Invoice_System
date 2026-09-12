@@ -6,13 +6,16 @@ import {
   dutchPublicHolidays,
   formatHoursNL,
   generateMonthlyScheduleData,
+  applyOvertimeAssignments,
   monthDays,
   monthlyScheduleGenerator,
+  normaliseOvertimeAssignments,
   selectEvenlySpreadDays,
 } from "@/lib/workforce/domain";
 import type {
   GeneratedSchedule,
   MonthlyScheduleRequest,
+  OvertimeAssignment,
   PublicHoliday,
   ScheduleRules,
   ScheduleRulesInput,
@@ -42,6 +45,7 @@ function holidaysIn(year: number, month: number): PublicHoliday[] {
 function generate(over: {
   year?: number; month?: number; total_hours?: number; working_days?: number;
   rules?: ScheduleRules; holidays?: PublicHoliday[];
+  existing_overtime?: OvertimeAssignment[];
 } = {}): GeneratedSchedule {
   const request: MonthlyScheduleRequest = {
     employee_id: "e1",
@@ -56,6 +60,7 @@ function generate(over: {
     rules: over.rules ?? rules(),
     request,
     holidays: over.holidays ?? [],
+    existing_overtime: over.existing_overtime,
   });
 }
 
@@ -208,7 +213,7 @@ describe("monthly schedule generation", () => {
   });
 
   it("is deterministic — the same request twice gives the same plan", async () => {
-    const a = generate({ total_hours: 143.25, working_days: 16 });
+    const a = generate({ total_hours: 112, working_days: 16 });
     const b = await monthlyScheduleGenerator.generate({
       employee: {
         id: "e1", client_id: "c1", name: "Jan", phone: null, function_title: null,
@@ -217,11 +222,11 @@ describe("monthly schedule generation", () => {
       },
       hourly_rate: null,       // present on the Phase 1 interface, never read
       rules: rules(),
-      request: { employee_id: "e1", client_id: "c1", year: 2026, month: 6, total_hours: 143.25, working_days: 16 },
+      request: { employee_id: "e1", client_id: "c1", year: 2026, month: 6, total_hours: 112, working_days: 16 },
       holidays: [],
     });
     expect(b.days).toEqual(a.days);
-    expect(b.total_hours).toBe(143.25);
+    expect(b.total_hours).toBe(112);
   });
 });
 
@@ -287,18 +292,20 @@ describe("public holidays", () => {
 /* ── edge case: a day that would exceed max_hours_per_day ─────────── */
 
 describe("the daily cap", () => {
-  it("re-spreads over more days rather than overrunning the cap", () => {
-    // 130 hours over the 14 days asked for would be ~9.3 h/day; the cap is 8, so
-    // the selection grows to ceil(130 / 8) = 17 days — still evenly spread.
+  it("caps every day and leaves the rest as overtime — it never adds days", () => {
+    // 130 hours over the 14 days asked for would be ~9.3 h/day. The cap is 8, so
+    // all 14 days sit at 8 (112 h) and the remaining 18 h become leftover.
     const schedule = generate({ working_days: 14, total_hours: 130, rules: rules({ max_hours_per_day: 8 }) });
-    const worked = schedule.days.filter((d) => d.kind === "worked");
+    const worked = schedule.days.filter((d) => d.hours > 0);
 
-    expect(Math.max(...worked.map((d) => d.hours))).toBeLessThanOrEqual(8);
-    expect(worked).toHaveLength(17);
-    expect(schedule.totals.worked_days).toBe(17);
-    expect(schedule.total_hours).toBe(130);
-    expect(schedule.warnings.some((w) => /3 extra working days added beyond the 14 requested/.test(w))).toBe(true);
-    // Still anchored to both ends of the month after growing.
+    expect(worked).toHaveLength(14);                 // exactly what was requested
+    expect(worked.every((d) => d.hours === 8)).toBe(true);
+    expect(schedule.total_hours).toBe(112);
+    expect(schedule.overtime.leftover_hours).toBe(18);
+    expect(schedule.overtime.unassigned_hours).toBe(18);
+    expect(codes(schedule)).toContain("overtime_unassigned");
+    expect(codes(schedule)).not.toContain("days_expanded");
+    // Still anchored to both ends of the month.
     expect(worked[0].date).toBe("2026-06-01");
     expect(worked.at(-1)!.date).toBe("2026-06-30");
   });
@@ -306,13 +313,14 @@ describe("the daily cap", () => {
   it("reports the shortfall when even the whole month cannot hold the hours", () => {
     // June 2026 has 22 weekdays; at 8 h/day that is 176 hours, so 200 cannot fit.
     const schedule = generate({ working_days: 22, total_hours: 200, rules: rules({ max_hours_per_day: 8 }) });
-    const worked = schedule.days.filter((d) => d.kind === "worked");
+    const worked = schedule.days.filter((d) => d.hours > 0);
 
     expect(worked).toHaveLength(22);
     expect(Math.max(...worked.map((d) => d.hours))).toBe(8);
     expect(schedule.total_hours).toBe(176);
     expect(schedule.requested_hours).toBe(200);
-    expect(schedule.warnings.some((w) => /24\.00 hours could not be scheduled/.test(w))).toBe(true);
+    expect(schedule.overtime.leftover_hours).toBe(24);
+    expect(codes(schedule)).toContain("overtime_unassigned");
     // Whatever was scheduled still reconciles with the printed rows.
     expect(sumWorkedCents(schedule)).toBe(17600);
   });
@@ -380,7 +388,9 @@ describe("degenerate requests", () => {
     expect(schedule.shifts).toHaveLength(0);
     expect(schedule.total_hours).toBe(0);
     expect(schedule.warnings.some((w) => /working_days is 0/.test(w))).toBe(true);
-    expect(schedule.warnings.some((w) => /40\.00 hours could not be scheduled/.test(w))).toBe(true);
+    // Every hour is leftover, since there was nowhere to put any of them.
+    expect(schedule.overtime.leftover_hours).toBe(40);
+    expect(codes(schedule)).toContain("overtime_unassigned");
   });
 
   it("never works a weekend, whatever the day count", () => {
@@ -404,126 +414,244 @@ describe("the 8-hour daily cap", () => {
   it("is the default, so an unconfigured client never gets a 9-hour day", () => {
     expect(DEFAULT_SCHEDULE_RULES.max_hours_per_day).toBe(8);
 
-    // 160 hours with the default cap: no day may exceed 8, and the month needs
-    // at least ceil(160 / 8) = 20 days to hold them.
     const schedule = generate({ working_days: 22, total_hours: 160 });
-    const worked = schedule.days.filter((d) => d.kind === "worked");
+    const worked = schedule.days.filter((d) => d.hours > 0);
     expect(Math.max(...worked.map((d) => d.hours))).toBeLessThanOrEqual(8);
     expect(schedule.total_hours).toBe(160);
+    expect(schedule.overtime.leftover_hours).toBe(0);
   });
 
-  it("expands against 8 rather than the old 10", () => {
-    // 90 hours over 10 days is 9 h/day. Under the old 10-hour cap that fitted
-    // in the 10 requested days; against 8 it must grow to ceil(90 / 8) = 12.
+  it("caps at 8 rather than the old 10, spilling the difference", () => {
+    // 90 hours over 10 days is 9 h/day. Under the old 10-hour cap that fitted;
+    // against 8 the days hold 80 and 10 hours spill over.
     const schedule = generate({ working_days: 10, total_hours: 90 });
-    const worked = schedule.days.filter((d) => d.kind === "worked");
+    const worked = schedule.days.filter((d) => d.hours > 0);
 
-    expect(worked).toHaveLength(12);
-    expect(Math.max(...worked.map((d) => d.hours))).toBeLessThanOrEqual(8);
-    expect(schedule.total_hours).toBe(90);
-    expect(codes(schedule)).toContain("days_expanded");
+    expect(worked).toHaveLength(10);
+    expect(worked.every((d) => d.hours === 8)).toBe(true);
+    expect(schedule.total_hours).toBe(80);
+    expect(schedule.overtime.leftover_hours).toBe(10);
   });
 
-  it("still honours a client that has deliberately configured something else", () => {
-    // The cap is read from the client's rules, never hardcoded.
+  it("reads the cap from the client's rules, never a hardcoded 8", () => {
     const schedule = generate({ working_days: 10, total_hours: 90, rules: rules({ max_hours_per_day: 9 }) });
-    expect(schedule.days.filter((d) => d.kind === "worked")).toHaveLength(10);
-    expect(codes(schedule)).not.toContain("days_expanded");
+    expect(schedule.total_hours).toBe(90);
+    expect(schedule.overtime.leftover_hours).toBe(0);
+    expect(codes(schedule)).not.toContain("overtime_unassigned");
   });
 
-  it("caps the month at 8 h/day when computing what will not fit", () => {
-    // June 2026 has 22 eligible weekdays → 176 h is the most the month can hold.
-    const schedule = generate({ working_days: 22, total_hours: 200 });
-    expect(schedule.total_hours).toBe(176);
-    expect(schedule.requested_hours).toBe(200);
-    expect(codes(schedule)).toContain("hours_unplaced");
+  it("splits evenly and stays under the cap when the hours do fit", () => {
+    const schedule = generate({ working_days: 10, total_hours: 55 });
+    const worked = schedule.days.filter((d) => d.hours > 0);
+    expect(worked).toHaveLength(10);
+    expect(Math.max(...worked.map((d) => d.hours))).toBeLessThanOrEqual(8);
+    expect(sumWorkedCents(schedule)).toBe(5500);
+    expect(schedule.overtime.leftover_hours).toBe(0);
   });
 });
 
-/* ── the upfront "these numbers look wrong" warning ───────────────── */
+/* ── leftover overtime, and assigning it ──────────────────────────── */
 
-describe("input-average warning", () => {
-  it("fires for the 20-hours-over-2-days case, and still expands", () => {
+describe("leftover overtime", () => {
+  it("THE REPORTED CASE: 20 hours over 2 days caps both at 8 and reports 4", () => {
     const schedule = generate({ working_days: 2, total_hours: 20 });
+    const worked = schedule.days.filter((d) => d.hours > 0);
 
-    // The warning the client asked for: raised from the numbers AS TYPED.
-    const entered = schedule.warning_details.find((w) => w.code === "input_exceeds_daily_cap");
-    expect(entered).toBeDefined();
-    expect(entered!.kind).toBe("input");
-    expect(entered!.message).toMatch(/20 hours over 2 working days averages 10 hours\/day/);
-    expect(entered!.message).toMatch(/above the 8 h\/day maximum/);
-    expect(entered!.message).toMatch(/please confirm these numbers are correct/);
+    // Both requested days at the cap — no third day invented.
+    expect(worked).toHaveLength(2);
+    expect(worked.map((d) => d.hours)).toEqual([8, 8]);
+    expect(schedule.total_hours).toBe(16);
 
-    // …and the existing behaviour is untouched: it still expands to
-    // ceil(20 / 8) = 3 days so no real day breaks the cap, and the hours
-    // reconcile exactly.
-    const worked = schedule.days.filter((d) => d.kind === "worked");
-    expect(worked).toHaveLength(3);
-    expect(Math.max(...worked.map((d) => d.hours))).toBeLessThanOrEqual(8);
-    expect(schedule.total_hours).toBe(20);
-    expect(codes(schedule)).toContain("days_expanded");
+    // …and the 4 remaining hours are reported, not placed.
+    expect(schedule.overtime).toMatchObject({
+      leftover_hours: 4, assigned_hours: 0, unassigned_hours: 4, assignments: [],
+    });
+    expect(schedule.days.every((d) => d.overtime_hours === 0)).toBe(true);
+
+    const w = schedule.warning_details.find((x) => x.code === "overtime_unassigned")!;
+    expect(w.kind).toBe("action");
+    expect(w.message).toBe(
+      "4 hours of overtime could not be scheduled within the requested 2 days at 8h/day — please assign them.",
+    );
   });
 
-  it("stays quiet when the entered average is within the cap", () => {
-    const schedule = generate({ working_days: 20, total_hours: 160 });   // exactly 8
-    expect(codes(schedule)).not.toContain("input_exceeds_daily_cap");
+  it("assigns the leftover to one date", () => {
+    const base = generate({ working_days: 2, total_hours: 20 });
+    const target = base.days.filter((d) => d.hours > 0)[1].date;
 
-    const under = generate({ working_days: 22, total_hours: 100 });      // ~4.5
-    expect(codes(under)).not.toContain("input_exceeds_daily_cap");
+    const after = applyOvertimeAssignments(base, [{ date: target, hours: 4 }], rules());
+    const day = after.days.find((d) => d.date === target)!;
+
+    expect(day.hours).toBe(8);              // distributed hours untouched
+    expect(day.overtime_hours).toBe(4);
+    expect(after.totals.overtime_hours).toBe(4);
+    expect(after.totals.hours).toBe(16);    // regular total unchanged
+    expect(after.overtime.unassigned_hours).toBe(0);
+    expect(codes(after)).not.toContain("overtime_unassigned");
+
+    // 8 + 4 = a 12-hour span: breaks are computed across the whole day, so two
+    // 30-minute breaks, and it ends at 08:00 + 12h + 1h.
+    expect(day.break_minutes).toBe(60);
+    expect(day.end).toBe("21:00");
   });
 
-  it("uses the client's configured cap, not a hardcoded 8", () => {
-    // 9 h/day entered: over an 8-hour cap, fine under a 10-hour one.
-    const strict = generate({ working_days: 10, total_hours: 90 });
-    expect(codes(strict)).toContain("input_exceeds_daily_cap");
-    expect(strict.warning_details.find((w) => w.code === "input_exceeds_daily_cap")!.message)
-      .toMatch(/above the 8 h\/day maximum/);
+  it("splits the leftover across several dates", () => {
+    const base = generate({ working_days: 2, total_hours: 20 });
+    const [d1, d2] = base.days.filter((d) => d.hours > 0).map((d) => d.date);
 
-    const lenient = generate({ working_days: 10, total_hours: 90, rules: rules({ max_hours_per_day: 10 }) });
-    expect(codes(lenient)).not.toContain("input_exceeds_daily_cap");
+    const after = applyOvertimeAssignments(base, [
+      { date: d1, hours: 1.5 },
+      { date: d2, hours: 2.5 },
+    ], rules());
+
+    expect(after.overtime.assignments).toEqual([
+      { date: d1, hours: 1.5 }, { date: d2, hours: 2.5 },
+    ]);
+    expect(after.totals.overtime_hours).toBe(4);
+    expect(after.overtime.unassigned_hours).toBe(0);
+    expect(codes(after)).not.toContain("overtime_unassigned");
   });
 
-  it("is independent of the capacity warnings — a full month with sane input", () => {
-    // The month is genuinely too small (200 h needs 25 days at 8 h/day, June
-    // 2026 has 22), but 200 over the 30 days entered averages 6,67 h/day, which
-    // is a perfectly reasonable thing to type. Capacity warnings fire; the
-    // input one does not.
-    const capacity = generate({ working_days: 30, total_hours: 200 });
-    expect(codes(capacity)).toContain("days_requested_exceed_month");
-    expect(codes(capacity)).toContain("hours_unplaced");
-    expect(codes(capacity)).not.toContain("input_exceeds_daily_cap");
+  it("can put overtime on a date the plan left free, times and all", () => {
+    const base = generate({ working_days: 2, total_hours: 20 });
+    const free = base.days.find((d) => d.kind === "free")!;
+
+    const after = applyOvertimeAssignments(base, [{ date: free.date, hours: 4 }], rules());
+    const day = after.days.find((d) => d.date === free.date)!;
+
+    expect(day.hours).toBe(0);
+    expect(day.overtime_hours).toBe(4);
+    expect(day.start).toBe("08:00");
+    expect(day.end).toBe("12:00");          // 4 h, under the continuous limit
+    expect(after.totals.worked_days).toBe(3);   // the two planned days plus this
   });
 
-  it("expansion cannot occur WITHOUT a bad entered average — they are linked", () => {
-    // Worth pinning down, because it is why the new warning was needed at all.
-    // `days_expanded` requires ceil(total / cap) > requested, which rearranges
-    // to total / requested > cap — exactly the input warning's condition. So
-    // every expansion was already a suspicious input; it was just reported as
-    // "3 extra working days added", which reads as "handled", not "check this".
-    for (const [hours, days] of [[20, 2], [90, 10], [50, 5], [33, 4]] as const) {
-      const schedule = generate({ total_hours: hours, working_days: days });
-      if (codes(schedule).includes("days_expanded")) {
-        expect(codes(schedule)).toContain("input_exceeds_daily_cap");
-      }
-    }
+  it("reports what is still outstanding on a partial assignment", () => {
+    const base = generate({ working_days: 2, total_hours: 20 });
+    const target = base.days.filter((d) => d.hours > 0)[0].date;
+
+    const after = applyOvertimeAssignments(base, [{ date: target, hours: 1 }], rules());
+    expect(after.overtime).toMatchObject({ leftover_hours: 4, assigned_hours: 1, unassigned_hours: 3 });
+    expect(after.warning_details.find((w) => w.code === "overtime_unassigned")!.message)
+      .toMatch(/^3 hours of overtime/);
   });
 
-  it("does not fire when working_days is 0 (that has its own warning)", () => {
-    const schedule = generate({ working_days: 0, total_hours: 40 });
-    expect(codes(schedule)).toContain("no_working_days");
-    expect(codes(schedule)).not.toContain("input_exceeds_daily_cap");
+  it("replaces the whole set, so an empty list clears the assignment", () => {
+    const base = generate({ working_days: 2, total_hours: 20 });
+    const target = base.days.filter((d) => d.hours > 0)[0].date;
+
+    const assigned = applyOvertimeAssignments(base, [{ date: target, hours: 4 }], rules());
+    const cleared = applyOvertimeAssignments(assigned, [], rules());
+
+    expect(cleared.totals.overtime_hours).toBe(0);
+    expect(cleared.days.every((d) => d.overtime_hours === 0)).toBe(true);
+    expect(cleared.overtime.unassigned_hours).toBe(4);
+    expect(codes(cleared)).toContain("overtime_unassigned");
   });
 
-  it("classifies every warning, and `warnings` mirrors the details exactly", () => {
-    const schedule = generate({ working_days: 2, total_hours: 20 });
-    expect(schedule.warnings).toEqual(schedule.warning_details.map((w) => w.message));
-    for (const w of schedule.warning_details) {
-      expect(["input", "capacity", "info"]).toContain(w.kind);
-    }
-    // The two the dashboard must tell apart never share a kind.
-    const byCode = Object.fromEntries(schedule.warning_details.map((w) => [w.code, w.kind]));
-    expect(byCode["input_exceeds_daily_cap"]).toBe("input");
-    const full = generate({ working_days: 22, total_hours: 200 });
-    expect(full.warning_details.find((w) => w.code === "hours_unplaced")!.kind).toBe("capacity");
+  it("merges duplicate dates and ignores non-positive entries", () => {
+    expect(normaliseOvertimeAssignments([
+      { date: "2026-06-02", hours: 1 },
+      { date: "2026-06-01", hours: 2 },
+      { date: "2026-06-02", hours: 1.5 },
+      { date: "2026-06-03", hours: 0 },
+      { date: "2026-06-04", hours: -2 },
+    ])).toEqual([
+      { date: "2026-06-01", hours: 2 },
+      { date: "2026-06-02", hours: 2.5 },
+    ]);
+  });
+
+  it("drops an assignment dated outside the month and says so", () => {
+    const base = generate({ working_days: 2, total_hours: 20 });
+    const after = applyOvertimeAssignments(base, [{ date: "2026-07-05", hours: 4 }], rules());
+
+    expect(after.totals.overtime_hours).toBe(0);
+    expect(codes(after)).toContain("overtime_outside_month");
+    expect(after.warning_details.find((w) => w.code === "overtime_outside_month")!.message)
+      .toMatch(/2026-07-05/);
+  });
+
+  it("keeps the day's own break rule when overtime lands on a short day", () => {
+    // 3 regular + 1 overtime = 4 h, exactly the continuous limit: still no break.
+    const base = generate({ working_days: 2, total_hours: 6 });
+    const target = base.days.filter((d) => d.hours > 0)[0].date;
+    const after = applyOvertimeAssignments(base, [{ date: target, hours: 1 }], rules());
+    const day = after.days.find((d) => d.date === target)!;
+
+    expect(day.hours).toBe(3);
+    expect(day.overtime_hours).toBe(1);
+    expect(day.break_minutes).toBe(0);
+    expect(day.end).toBe("12:00");
+  });
+});
+
+/* ── re-generating on top of an existing assignment ───────────────── */
+
+describe("re-generation with assigned overtime", () => {
+  it("preserves an assignment when the numbers still leave room for it", () => {
+    const first = generate({ working_days: 2, total_hours: 20 });
+    const target = first.days.filter((d) => d.hours > 0)[0].date;
+    const assigned = applyOvertimeAssignments(first, [{ date: target, hours: 4 }], rules());
+
+    // Same request again — the use case carries the stored assignments back in.
+    const again = generate({
+      working_days: 2, total_hours: 20,
+      existing_overtime: assigned.overtime.assignments,
+    });
+
+    expect(again.days.find((d) => d.date === target)!.overtime_hours).toBe(4);
+    expect(again.totals.overtime_hours).toBe(4);
+    expect(again.overtime.unassigned_hours).toBe(0);
+    expect(codes(again)).not.toContain("overtime_reassign_needed");
+  });
+
+  it("keeps the assignment but flags it when the new leftover is smaller", () => {
+    const first = generate({ working_days: 2, total_hours: 20 });
+    const target = first.days.filter((d) => d.hours > 0)[0].date;
+    const assigned = applyOvertimeAssignments(first, [{ date: target, hours: 4 }], rules());
+
+    // Re-generated with hours that now fit: nothing spills over any more, but
+    // 4 hours are still assigned. It must not silently vanish.
+    const again = generate({
+      working_days: 2, total_hours: 16,
+      existing_overtime: assigned.overtime.assignments,
+    });
+
+    expect(again.days.find((d) => d.date === target)!.overtime_hours).toBe(4);
+    const flag = again.warning_details.find((w) => w.code === "overtime_reassign_needed")!;
+    expect(flag).toBeDefined();
+    expect(flag.kind).toBe("action");
+    expect(flag.message).toMatch(/4 hours of overtime are assigned but only 0/);
+  });
+
+  it("re-reports the remainder when a re-generation spills more than is assigned", () => {
+    const first = generate({ working_days: 2, total_hours: 20 });
+    const target = first.days.filter((d) => d.hours > 0)[0].date;
+    const assigned = applyOvertimeAssignments(first, [{ date: target, hours: 4 }], rules());
+
+    // Now 24 hours over the same 2 days: 8 leftover, 4 of them already placed.
+    const again = generate({
+      working_days: 2, total_hours: 24,
+      existing_overtime: assigned.overtime.assignments,
+    });
+
+    expect(again.overtime).toMatchObject({ leftover_hours: 8, assigned_hours: 4, unassigned_hours: 4 });
+    expect(codes(again)).toContain("overtime_unassigned");
+    expect(codes(again)).not.toContain("overtime_reassign_needed");
+  });
+
+  it("drops a carried assignment whose date is not in the new month", () => {
+    const june = generate({ working_days: 2, total_hours: 20 });
+    const target = june.days.filter((d) => d.hours > 0)[0].date;
+    const assigned = applyOvertimeAssignments(june, [{ date: target, hours: 4 }], rules());
+
+    const july = generate({
+      year: 2026, month: 7, working_days: 2, total_hours: 20,
+      existing_overtime: assigned.overtime.assignments,
+    });
+
+    expect(july.totals.overtime_hours).toBe(0);
+    expect(codes(july)).toContain("overtime_outside_month");
   });
 });
