@@ -391,8 +391,17 @@ n8n keeps using `x-api-key` and is unaffected.
   `lib/supabase/session-client.ts` (browser / server-component / middleware).
   Separate from `lib/supabase-admin.ts`, which is service-role and RLS-bypassing
   and must never see request cookies.
-  ⚠️ `@supabase/supabase-js` is pinned at `^2.103.0`: 2.116 tightened
-  postgrest-js insert typing and breaks `app/api/clients/**` type-checking.
+  ⚠️ `@supabase/ssr` peer-depends on `@supabase/supabase-js ^2.114.0`, so
+  supabase-js **cannot** be held below that — npm auto-installs peers and will
+  override any lower pin, leaving a tree `npm ls` reports as `invalid`. (It did:
+  a 2.103.0 pin type-checked locally purely because the local tree was broken,
+  then Vercel's clean install resolved 2.116 and the build failed.) postgrest-js
+  >= 2.114 types `.insert()` with `RejectExcessProperties`, which distributes
+  over unions — so a payload built by spreading a union-typed fragment is
+  rejected. That is why `aliasesPatch` declares the single `AliasesPatch` type
+  (`{ aliases?: string[] | null }`) instead of letting TS infer
+  `{} | { aliases: … }`. Keep helpers that get spread into a Supabase payload
+  non-union for the same reason.
 - **DB** (migration `016`): `user_profiles` (id → auth.users, full_name, role
   `owner|developer|employee`, status `pending|active|disabled`) and
   `user_permissions` (user_id, permission_key, granted). A trigger on

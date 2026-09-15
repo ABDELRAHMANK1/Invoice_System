@@ -42,9 +42,24 @@ export const aliasesSchema = z
   .nullable();
 
 /**
+ * The shape of a spreadable aliases patch.
+ *
+ * Written as ONE type with an optional property rather than being inferred,
+ * which would produce the union `{} | { aliases: string[] | null }`. Spreading
+ * that union makes the surrounding insert/update payload a union too, and
+ * postgrest-js (>= 2.114) types its `.insert()` argument with
+ * `RejectExcessProperties`, which distributes over unions and rejects the `{}`
+ * branch because its `aliases` is `undefined` rather than `string[] | null`.
+ *
+ * Runtime behaviour is unchanged: `undefined` still yields `{}`, so the column
+ * is left untouched by a PATCH instead of being nulled.
+ */
+export type AliasesPatch = { aliases?: string[] | null };
+
+/**
  * Turn a parsed `aliases` value into the update fragment to spread into a
  * Supabase payload — `{}` when the field wasn't sent, so PATCH stays partial.
  */
-export function aliasesPatch(value: string | string[] | null | undefined) {
+export function aliasesPatch(value: string | string[] | null | undefined): AliasesPatch {
   return value === undefined ? {} : { aliases: parseAliases(value) };
 }
