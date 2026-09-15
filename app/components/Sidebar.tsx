@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Icon, I } from "./Icon";
+import { type AuthProfile, type PermissionKey, can } from "@/lib/auth/permissions";
 
 const NAV_ITEMS: Array<{
   href: string;
@@ -10,27 +11,37 @@ const NAV_ITEMS: Array<{
   label: string;
   match?: (pathname: string) => boolean;
   count?: number | null;
+  /** null = any active account. Must agree with PAGE_RULES in
+   *  lib/auth/route-permissions.ts, which is what actually blocks the route —
+   *  hiding a link the middleware would allow (or vice versa) is a bug. */
+  permission?: PermissionKey | null;
 }> = [
   // Dashboard is the workspace overview at the root; marked active only on the
   // exact root so it doesn't light up for every nested route.
-  { href: "/",          d: I.home,    label: "Dashboard", match: (p) => p === "/" },
-  { href: "/invoices",  d: I.invoice, label: "Invoices" },
-  { href: "/tasks",     d: I.bell,    label: "Tasks" },
-  { href: "/files",     d: I.folder,  label: "Files" },
-  { href: "/clients",   d: I.users,   label: "Clients" },
-  { href: "/bulk-converter", d: I.excel, label: "Bulk Converter" },
-  { href: "/templates", d: I.copy,    label: "Templates" },
-  { href: "/reports",   d: I.chart,   label: "Reports" },
-  { href: "/settings",  d: I.cog,     label: "Settings" },
+  { href: "/",          d: I.home,    label: "Dashboard", match: (p) => p === "/", permission: null },
+  { href: "/invoices",  d: I.invoice, label: "Invoices",  permission: "view_invoices" },
+  { href: "/tasks",     d: I.bell,    label: "Tasks",     permission: "view_invoices" },
+  { href: "/files",     d: I.folder,  label: "Files",     permission: "view_invoices" },
+  { href: "/clients",   d: I.users,   label: "Clients",   permission: "view_invoices" },
+  { href: "/bulk-converter", d: I.excel, label: "Bulk Converter", permission: "export_excel" },
+  { href: "/templates", d: I.copy,    label: "Templates", permission: "view_invoices" },
+  { href: "/reports",   d: I.chart,   label: "Reports",   permission: "export_excel" },
+  { href: "/settings",  d: I.cog,     label: "Settings",  permission: null },
 ];
 
 interface SidebarProps {
   invoiceCount?: number;
   clientCount?: number;
+  /** Omitted only by tests/stories — then every item shows, as before. */
+  profile?: AuthProfile;
 }
 
-export function Sidebar({ invoiceCount, clientCount }: SidebarProps) {
+export function Sidebar({ invoiceCount, clientCount, profile }: SidebarProps) {
   const pathname = usePathname();
+
+  const visibleItems = profile
+    ? NAV_ITEMS.filter((item) => can(profile, item.permission ?? null))
+    : NAV_ITEMS;
 
   function isActive(item: (typeof NAV_ITEMS)[number]) {
     if (item.match) return item.match(pathname);
@@ -55,7 +66,7 @@ export function Sidebar({ invoiceCount, clientCount }: SidebarProps) {
       </div>
 
       <nav className="nav-sec" aria-label="Workspace">
-        {NAV_ITEMS.map((item) => {
+        {visibleItems.map((item) => {
           const count =
             item.href === "/invoices" ? invoiceCount :
             item.href === "/clients"  ? clientCount  :

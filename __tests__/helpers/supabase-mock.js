@@ -56,6 +56,13 @@ function makeSupabaseAdmin(vi) {
     // { data, error }; tests can inspect .rpc.mock.calls or override via
     // mockResolvedValueOnce.
     rpc: vi.fn(() => Promise.resolve({ data: null, error: null })),
+    // Admin Auth API. Only the calls the dashboard actually makes are stubbed;
+    // tests override them with mockResolvedValue as needed.
+    auth: {
+      admin: {
+        listUsers: vi.fn(() => Promise.resolve({ data: { users: [] }, error: null })),
+      },
+    },
     _table: ensure,
     _resetAll() {
       for (const chain of tables.values()) chain._reset();

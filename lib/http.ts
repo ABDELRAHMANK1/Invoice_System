@@ -9,8 +9,10 @@ export function requireInternalApiKey(req: NextRequest) {
   if (!env.apiInternalKey) return null;
 
   // Browser requests from the dashboard run on the same origin and cannot attach
-  // the private n8n API key to normal links. Use real user auth before exposing
-  // this dashboard publicly.
+  // the private n8n API key to normal links (an <a download> sends no headers).
+  // Those requests are NOT unauthenticated: middleware.ts has already resolved
+  // the Supabase session and checked the route's permission before the handler
+  // runs, so this only decides whether an EXTRA machine key is also required.
   if (req.headers.get("sec-fetch-site") === "same-origin") return null;
 
   const provided = req.headers.get("x-api-key") || req.headers.get("authorization")?.replace(/^Bearer\s+/i, "");

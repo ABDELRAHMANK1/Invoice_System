@@ -4,6 +4,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Icon, I } from "./Icon";
 import { ThemeToggle } from "./ThemeToggle";
+import { UserMenu } from "./UserMenu";
+import type { AuthProfile } from "@/lib/auth/permissions";
 
 const PAGE_TITLES: Record<string, string> = {
   "/":         "Dashboard",
@@ -13,9 +15,10 @@ const PAGE_TITLES: Record<string, string> = {
   "/clients":  "Clients",
   "/reports":  "Reports",
   "/settings": "Settings",
+  "/settings/users": "Users",
 };
 
-export function Topbar() {
+export function Topbar({ profile }: { profile?: AuthProfile }) {
   const pathname = usePathname();
   const title = PAGE_TITLES[pathname] ?? "Dashboard";
 
@@ -32,6 +35,7 @@ export function Topbar() {
         <Link href="/settings" className="iconbtn" aria-label="Settings" title="Settings">
           <Icon d={I.cog} size={16} />
         </Link>
+        {profile && <UserMenu profile={profile} />}
       </div>
     </header>
   );

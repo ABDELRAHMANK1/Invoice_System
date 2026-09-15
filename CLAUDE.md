@@ -303,6 +303,7 @@ this is intentional, do not change it.
 - Run locally:
   ```bash
   npm install
+  # NEXT_PUBLIC_SUPABASE_ANON_KEY must be set or every page 500s on login.
   npm run dev            # http://localhost:3000
   npm run build          # type-check + production build
   npx vitest run         # ~135 unit tests
@@ -376,6 +377,82 @@ this is intentional, do not change it.
       Use the Bulk Converter for the dashboard upload flow; the CLI above is the
       only remaining `convertSnelstartSheet` caller.
 
+### Authentication (Supabase Auth sessions)
+
+Replaced the HTTP Basic Auth popup (Sept 2026). People sign in at `/login`;
+n8n keeps using `x-api-key` and is unaffected.
+
+- **Env:** `NEXT_PUBLIC_SUPABASE_ANON_KEY` is now REQUIRED (the publishable
+  `sb_publishable_…` key). It is what the browser holds a session with; the
+  service-role key must never reach the client. `lib/env.ts` does NOT
+  `required()` it — a missing anon key should break auth, not every route — so
+  `lib/supabase/session-client.ts` raises its own error instead.
+- **`@supabase/ssr`** provides the three cookie-backed clients in
+  `lib/supabase/session-client.ts` (browser / server-component / middleware).
+  Separate from `lib/supabase-admin.ts`, which is service-role and RLS-bypassing
+  and must never see request cookies.
+  ⚠️ `@supabase/supabase-js` is pinned at `^2.103.0`: 2.116 tightened
+  postgrest-js insert typing and breaks `app/api/clients/**` type-checking.
+- **DB** (migration `016`): `user_profiles` (id → auth.users, full_name, role
+  `owner|developer|employee`, status `pending|active|disabled`) and
+  `user_permissions` (user_id, permission_key, granted). A trigger on
+  `auth.users` creates every profile as **pending/employee** — not the signup
+  route, so an invite or a dashboard-created user can't end up profile-less.
+  **Bootstrap the first owner by hand** with the `update` in the migration's
+  footer comment; nothing auto-promotes the first signup.
+- **Role beats permissions:** `owner` and `developer` bypass `user_permissions`
+  entirely. Only `employee` is row-checked. The status gate runs BEFORE the role
+  bypass, so a disabled owner is locked out.
+- **`lib/auth/permissions.ts`** is the pure model (`can`, `canManageUsers`,
+  `grantedKeys`) shared by middleware, server components and routes.
+  **`lib/auth/route-permissions.ts`** maps path + method → permission key.
+- **`middleware.ts`** is the single gate, in this order: `x-api-key` (n8n) →
+  public paths → session → active status → permission. Pages redirect
+  (`/login?next=…`, `/pending`, `/?denied=1`); `/api/*` answers JSON 401/403,
+  because a fetch cannot follow a redirect to an HTML login page.
+  **Permissions for `/api` are enforced HERE, not in the ~45 route files** — a
+  check that must be remembered in every route is one that gets forgotten. An
+  unmapped `/api` path requires `delete_data`, i.e. it fails CLOSED.
+- **`LEGACY_BASIC_AUTH=1`** restores the old Basic Auth popup and skips session
+  auth — a one-env-var rollback. The two can't coexist (a `WWW-Authenticate`
+  challenge fires before `/login` is ever reached). It also needs
+  `DASHBOARD_PASS` set: the previously hardcoded password was NOT carried over.
+  Delete the flag, `basicAuthGate` and `DASHBOARD_USER/PASS` once the cutover
+  has settled.
+- **Pages:** `app/(auth)/` holds `/login`, `/signup`, `/pending`,
+  `/forgot-password`, `/reset-password` — no sidebar, no topbar. `/login` and
+  `/signup` are separate ROUTES rendering one `<AuthCard>` with a different
+  starting tab, so tab-switching never remounts the inputs.
+  `app/auth/callback/route.ts` exchanges the emailed `code` for a session
+  server-side (httpOnly cookies) and refuses non-same-site `next` targets.
+- **The auth screens are PINNED to the light palette.** `app/layout.tsx` stamps
+  `[data-theme="dark"]` from `localStorage` on every route, so a dark-mode user
+  used to get a dark login page with no toggle on it and no way back to light.
+  `.auth-page` in `globals.css` redeclares the light tokens for its own subtree,
+  which every shared class inside (`.btn`, `.form-input`, `.form-label`) then
+  picks up — don't "fix" this by adding dark overrides. Card is 450px / 12px
+  radius; the header above it is the word "Oranje" alone — no logo mark, no
+  "Invoice workspace" strapline. Password inputs use `<PasswordField>`
+  (`app/components/PasswordField.tsx`), whose reveal toggle is a
+  `type="button"` — a bare `<button>` in a form defaults to submit, so the eye
+  would post the login instead of showing the password — and is `tabIndex={-1}`
+  so Tab still runs password → submit. Note `.auth-note` and `.auth-state-icon` are also used by
+  `app/(dashboard)/page.tsx` and the Users page, OUTSIDE `.auth-page`: there
+  they resolve the ambient theme's tokens and follow dark mode, which is
+  correct.
+- **Settings > Users** (`/settings/users`) is **owner/developer only** — a ROLE
+  test, so granting an employee `manage_users` still does not let them in
+  (`requireUserAdmin` in `lib/auth/guard.ts` agrees, and it also blocks the
+  internal API key, which middleware waves through).
+  `PATCH /api/users/:id` is one endpoint for approve / edit-permissions /
+  disable: approving IS "status = active + these grants", so it can't half-fail.
+  `permissions` is the COMPLETE checkbox state (unchecked writes `false`), and
+  two lockout guards hold — you can't change your own role/status, and the last
+  active owner can't be demoted or disabled.
+- **e2e:** Playwright no longer sends Basic Auth credentials. `e2e/auth.setup.ts`
+  logs in once with `E2E_EMAIL` / `E2E_PASSWORD` (an APPROVED account) and saves
+  `storageState`; the specs still stub `/api/*`.
+
 ### Clients, suppliers & customers (Klanten)
 
 - A **client** (the company we do accounting for) has two kinds of counterparties,
@@ -423,7 +500,8 @@ this is intentional, do not change it.
   `010` clients.postcode + rsin, `011` employees + scheduling, `012` employees.function_title
   + client work-time window, `013` the days input becomes a MONTH total
   (see "Employees + monthly schedules"), `014` document_templates.kind +
-  mime_type (see "Document Templates"), `015` max_hours_per_day 10 → 8.
+  mime_type (see "Document Templates"), `015` max_hours_per_day 10 → 8,
+  `016` user_profiles + user_permissions (see "Authentication").
 
 ### Employees + monthly schedules (Phases 1–2)
 
@@ -710,7 +788,7 @@ dashboard for due reminders and sends them back to Telegram.
   - The filter bar uses the shared `.filters/.fbar/.field/.chip` language from
     the Invoices page — don't reintroduce ad-hoc inline-styled controls.
 
-#### API (all routes take `x-api-key`; middleware skips Basic Auth for `/api/*`)
+#### API (n8n sends `x-api-key`; the dashboard uses its session — see "Authentication")
 
 | Route | Purpose |
 |---|---|
