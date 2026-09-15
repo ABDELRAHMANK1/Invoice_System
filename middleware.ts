@@ -92,6 +92,20 @@ function safeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
+/**
+ * Loud on a cold start, not on every request: an unset API_INTERNAL_KEY used to
+ * be harmless (the old middleware skipped /api entirely and
+ * requireInternalApiKey passed when the key was falsy), but it now means n8n
+ * has no way in and the invoice pipeline 401s. Fail-closed is correct — an
+ * unset variable must not make the whole API public — so the misconfiguration
+ * is surfaced in the logs instead of being silently tolerated.
+ */
+if (!process.env.API_INTERNAL_KEY) {
+  console.warn(
+    "[auth] API_INTERNAL_KEY is not set — n8n and every other machine caller will get 401 on /api/*."
+  );
+}
+
 function hasInternalApiKey(req: NextRequest): boolean {
   const expected = process.env.API_INTERNAL_KEY;
   if (!expected) return false;

@@ -413,6 +413,12 @@ n8n keeps using `x-api-key` and is unaffected.
   **Permissions for `/api` are enforced HERE, not in the ~45 route files** — a
   check that must be remembered in every route is one that gets forgotten. An
   unmapped `/api` path requires `delete_data`, i.e. it fails CLOSED.
+- ⚠️ **`API_INTERNAL_KEY` is now load-bearing for n8n.** The OLD middleware
+  skipped `/api/*` entirely and `requireInternalApiKey` PASSED when the key was
+  unset, so n8n worked either way. The new middleware fails closed: unset key →
+  no machine caller can authenticate → every n8n request 401s and the invoice
+  pipeline stops. It must be set in Vercel and match what n8n sends. Middleware
+  logs a warning on cold start when it is missing.
 - **`LEGACY_BASIC_AUTH=1`** restores the old Basic Auth popup and skips session
   auth — a one-env-var rollback. The two can't coexist (a `WWW-Authenticate`
   challenge fires before `/login` is ever reached). It also needs
