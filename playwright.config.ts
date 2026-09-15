@@ -1,4 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
+import path from "node:path";
+
+const STORAGE_STATE = path.join(__dirname, "e2e", ".auth", "dashboard.json");
 
 const PORT = Number(process.env.E2E_PORT ?? 3100);
 const BASE_URL = process.env.E2E_BASE_URL ?? `http://localhost:${PORT}`;
@@ -18,17 +21,16 @@ export default defineConfig({
     trace: "on-first-retry",
     video: "retain-on-failure",
     screenshot: "only-on-failure",
-    // Basic Auth credentials match middleware.ts defaults
-    httpCredentials: {
-      username: process.env.DASHBOARD_USER ?? "admin",
-      password: process.env.DASHBOARD_PASS ?? "Oranje19052026@",
-    },
   },
 
   projects: [
+    // Basic Auth is gone: the dashboard needs a real Supabase session, so this
+    // project logs in once and every spec reuses the saved cookies.
+    { name: "setup", testMatch: /auth\.setup\.ts/ },
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      use: { ...devices["Desktop Chrome"], storageState: STORAGE_STATE },
+      dependencies: ["setup"],
     },
   ],
 
