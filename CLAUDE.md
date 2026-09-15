@@ -516,7 +516,8 @@ n8n keeps using `x-api-key` and is unaffected.
   + client work-time window, `013` the days input becomes a MONTH total
   (see "Employees + monthly schedules"), `014` document_templates.kind +
   mime_type (see "Document Templates"), `015` max_hours_per_day 10 → 8,
-  `016` user_profiles + user_permissions (see "Authentication").
+  `016` user_profiles + user_permissions (see "Authentication"),
+  `017` tasks.status_rank + priority_rank (see "Tasks + Telegram reminders").
 
 ### Employees + monthly schedules (Phases 1–2)
 
@@ -796,6 +797,18 @@ dashboard for due reminders and sends them back to Telegram.
     inside a row. It flips upward near the viewport bottom, and closes on
     outside-click, Escape (document-level — focus may still be on the trigger),
     scroll and resize.
+  - **Open tasks sort above closed ones, by priority** (urgent → low, newest
+    first inside a tie). `status` / `priority` are TEXT columns, so ordering by
+    them directly sorts alphabetically — migration `017` materialises
+    `status_rank` / `priority_rank` as stored generated columns and
+    `GET /api/tasks` orders by those, keeping the order correct ACROSS pages
+    rather than only within the fetched one. `compareForBoard` on the page
+    applies the identical rule to the loaded rows, which is what lets an
+    optimistic status/priority change re-sort the row on the next frame; keep
+    the two definitions in sync. The route falls back to plain `created_at`
+    ordering if the rank columns are missing, so the page still renders on a
+    database where `017` has not been run — delete that branch once it has.
+    The first closed row on a page renders a `.t-group-sep` divider.
   - Stat cards come from the shared `<StatsRow>` and are **filter toggles**
     backed by `/api/tasks/stats` (real table-wide counts, not page counts).
   - Search is **debounced** (350 ms); there is no separate Search button, so

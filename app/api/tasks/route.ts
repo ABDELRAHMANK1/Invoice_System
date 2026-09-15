@@ -79,11 +79,16 @@ export async function GET(req: NextRequest) {
   const telegramMessageId = sp.get("telegram_message_id")?.trim();
   const reminderMessageId = sp.get("reminder_message_id")?.trim();
 
-  let query = supabaseAdmin
-    .from("tasks")
-    .select("*", { count: "exact" })
-    .order("created_at", { ascending: false })
-    .range(rangeFrom, rangeTo);
+  // Board order: open tasks first, then by priority, newest first inside a tie.
+  // status_rank / priority_rank are the generated columns from migration 017 —
+  // the text columns themselves sort alphabetically, which is meaningless.
+  const buildQuery = (ranked: boolean) => {
+    let qb = supabaseAdmin.from("tasks").select("*", { count: "exact" });
+    if (ranked) qb = qb.order("status_rank", { ascending: true }).order("priority_rank", { ascending: true });
+    return qb.order("created_at", { ascending: false }).range(rangeFrom, rangeTo);
+  };
+
+  let query = buildQuery(true);
 
   if (status && TASK_STATUSES.includes(status as (typeof TASK_STATUSES)[number])) {
     query = query.eq("status", status);
@@ -106,7 +111,12 @@ export async function GET(req: NextRequest) {
     query = query.not("status", "in", "(done,cancelled)").not("remind_at", "is", null).lte("remind_at", now);
   }
 
-  const { data, error, count } = await query;
+  let { data, error, count } = await query;
+  // Migration 017 not applied yet: fall back to plain created_at ordering
+  // rather than 400-ing the whole tasks page. Safe to delete once it has run.
+  if (error && /status_rank|priority_rank/.test(error.message)) {
+    ({ data, error, count } = await buildQuery(false));
+  }
   if (error) return jsonError(error.message, 500);
 
   return NextResponse.json({

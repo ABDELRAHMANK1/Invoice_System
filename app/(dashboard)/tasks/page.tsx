@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon, I } from "@/app/components/Icon";
 import { Menu, type MenuEntry } from "@/app/components/Menu";
 import { ConfirmDialog } from "@/app/components/ConfirmDialog";
@@ -96,6 +96,20 @@ function priorityTone(priority: TaskPriority): StatusTone | "muted" {
 
 function isOpen(task: TaskRow): boolean {
   return task.status !== "done" && task.status !== "cancelled";
+}
+
+// Mirrors migration 017's generated status_rank / priority_rank, so the order
+// the list query returns and the order the page renders are the same rule.
+// Sorting here as well is what lets an optimistic status or priority change
+// move the row on the next frame instead of waiting for a refetch.
+const PRIORITY_RANK: Record<TaskPriority, number> = { urgent: 0, high: 1, normal: 2, low: 3 };
+
+function compareForBoard(a: TaskRow, b: TaskRow): number {
+  const byOpen = Number(!isOpen(a)) - Number(!isOpen(b));
+  if (byOpen !== 0) return byOpen;
+  const byPriority = PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority];
+  if (byPriority !== 0) return byPriority;
+  return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
 }
 
 function isOverdue(task: TaskRow): boolean {
@@ -410,6 +424,8 @@ export default function TasksPage() {
     return items;
   }
 
+  const ordered = useMemo(() => [...tasks.data].sort(compareForBoard), [tasks.data]);
+
   const pageNums = Array.from({ length: Math.min(tasks.totalPages, 5) }, (_, i) => {
     if (tasks.totalPages <= 5) return i + 1;
     if (page <= 3) return i + 1;
@@ -578,8 +594,10 @@ export default function TasksPage() {
           </div>
         ) : (
           <div style={{ opacity: loading ? 0.55 : 1, transition: "opacity .12s" }}>
-            {tasks.data.map((task) => {
+            {ordered.map((task, i) => {
               const overdue = isOverdue(task);
+              // The first closed row on the page opens the bottom section.
+              const startsClosed = !isOpen(task) && (i === 0 || isOpen(ordered[i - 1]));
               const context = [
                 task.source !== "dashboard" ? SOURCE_LABEL[task.source] : null,
                 task.client_name,
@@ -589,99 +607,102 @@ export default function TasksPage() {
               ].filter(Boolean).join(" · ");
 
               return (
-                <div key={task.id} className={`t-row${overdue ? " overdue" : ""}`} style={{ gridTemplateColumns: GRID, cursor: "default" }}>
-                  <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 2, paddingRight: 12 }}>
-                    <button
-                      onClick={() => openEdit(task)}
-                      title={`${task.title} — click to edit`}
-                      style={{
-                        border: 0, background: "transparent", padding: 0, textAlign: "left", font: "inherit",
-                        fontWeight: 600, cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                        color: task.status === "done" || task.status === "cancelled" ? "var(--muted)" : "var(--ink)",
-                        textDecoration: task.status === "cancelled" ? "line-through" : "none",
-                      }}
-                    >
-                      {task.title}
-                    </button>
-                    {context && (
-                      <span style={{ fontSize: 11.5, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {context}
+                <Fragment key={task.id}>
+                  {startsClosed && <div className="t-group-sep">Done &amp; cancelled</div>}
+                  <div className={`t-row${overdue ? " overdue" : ""}`} style={{ gridTemplateColumns: GRID, cursor: "default" }}>
+                    <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 2, paddingRight: 12 }}>
+                      <button
+                        onClick={() => openEdit(task)}
+                        title={`${task.title} — click to edit`}
+                        style={{
+                          border: 0, background: "transparent", padding: 0, textAlign: "left", font: "inherit",
+                          fontWeight: 600, cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                          color: task.status === "done" || task.status === "cancelled" ? "var(--muted)" : "var(--ink)",
+                          textDecoration: task.status === "cancelled" ? "line-through" : "none",
+                        }}
+                      >
+                        {task.title}
+                      </button>
+                      {context && (
+                        <span style={{ fontSize: 11.5, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {context}
+                        </span>
+                      )}
+                    </div>
+
+                    <div>
+                      <span className={`pill-sel s-${statusTone(task.status)}`}>
+                        <select
+                          value={task.status}
+                          onChange={(e) => setStatusOf(task, e.target.value as TaskStatus)}
+                          aria-label={`Status of ${task.title}`}
+                        >
+                          {INLINE_STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
+                          {task.status === "cancelled" && <option value="cancelled">{STATUS_LABEL.cancelled}</option>}
+                        </select>
+                        <span className="pill-chev"><Icon d={I.chev} size={11} stroke={2.2} /></span>
                       </span>
-                    )}
-                  </div>
+                    </div>
 
-                  <div>
-                    <span className={`pill-sel s-${statusTone(task.status)}`}>
-                      <select
-                        value={task.status}
-                        onChange={(e) => setStatusOf(task, e.target.value as TaskStatus)}
-                        aria-label={`Status of ${task.title}`}
+                    <div>
+                      <span className={`pill-sel s-${priorityTone(task.priority)}`}>
+                        <select
+                          value={task.priority}
+                          onChange={(e) => updateTask(task, { priority: e.target.value as TaskPriority }, "Priority updated")}
+                          aria-label={`Priority of ${task.title}`}
+                        >
+                          {(Object.keys(PRIORITY_LABEL) as TaskPriority[]).map((p) => (
+                            <option key={p} value={p}>{PRIORITY_LABEL[p]}</option>
+                          ))}
+                        </select>
+                        <span className="pill-chev"><Icon d={I.chev} size={11} stroke={2.2} /></span>
+                      </span>
+                    </div>
+
+                    {/* No reminder pending but some were sent → report the history
+                        instead of an empty dash with a stray counter beside it. */}
+                    <div style={{ fontSize: 12.5, color: overdue ? "var(--danger)" : "var(--muted)", fontWeight: overdue ? 600 : 400 }} title={fmtExact(task.remind_at)}>
+                      {task.remind_at ? (
+                        <>
+                          {fmtWhen(task.remind_at)}
+                          {task.reminder_count > 0 && (
+                            <span style={{ color: "var(--faint)", fontWeight: 400 }} title={`${task.reminder_count} reminder(s) sent`}> · {task.reminder_count}×</span>
+                          )}
+                        </>
+                      ) : task.reminder_count > 0 ? (
+                        <span style={{ color: "var(--faint)" }}>sent {task.reminder_count}×</span>
+                      ) : (
+                        "—"
+                      )}
+                    </div>
+
+                    <div style={{ fontSize: 12.5, color: "var(--muted)" }} title={fmtExact(task.due_at)}>
+                      {fmtWhen(task.due_at)}
+                    </div>
+
+                    <div className="row-actions pinned">
+                      {isOpen(task) ? (
+                        <button className="act act-good" title="Mark as done" aria-label={`Mark ${task.title} as done`} onClick={() => setStatusOf(task, "done")}>
+                          <Icon d={I.check} size={15} stroke={2.2} />
+                        </button>
+                      ) : (
+                        <button className="act" title="Reopen task" aria-label={`Reopen ${task.title}`} onClick={() => setStatusOf(task, "new")}>
+                          <Icon d={I.refresh} size={14} stroke={2} />
+                        </button>
+                      )}
+                      <button
+                        className={`act${menu?.task.id === task.id ? " on" : ""}`}
+                        title="More actions"
+                        aria-label={`More actions for ${task.title}`}
+                        aria-haspopup="menu"
+                        aria-expanded={menu?.task.id === task.id}
+                        onClick={(e) => setMenu({ task, anchor: e.currentTarget.getBoundingClientRect() })}
                       >
-                        {INLINE_STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
-                        {task.status === "cancelled" && <option value="cancelled">{STATUS_LABEL.cancelled}</option>}
-                      </select>
-                      <span className="pill-chev"><Icon d={I.chev} size={11} stroke={2.2} /></span>
-                    </span>
-                  </div>
-
-                  <div>
-                    <span className={`pill-sel s-${priorityTone(task.priority)}`}>
-                      <select
-                        value={task.priority}
-                        onChange={(e) => updateTask(task, { priority: e.target.value as TaskPriority }, "Priority updated")}
-                        aria-label={`Priority of ${task.title}`}
-                      >
-                        {(Object.keys(PRIORITY_LABEL) as TaskPriority[]).map((p) => (
-                          <option key={p} value={p}>{PRIORITY_LABEL[p]}</option>
-                        ))}
-                      </select>
-                      <span className="pill-chev"><Icon d={I.chev} size={11} stroke={2.2} /></span>
-                    </span>
-                  </div>
-
-                  {/* No reminder pending but some were sent → report the history
-                      instead of an empty dash with a stray counter beside it. */}
-                  <div style={{ fontSize: 12.5, color: overdue ? "var(--danger)" : "var(--muted)", fontWeight: overdue ? 600 : 400 }} title={fmtExact(task.remind_at)}>
-                    {task.remind_at ? (
-                      <>
-                        {fmtWhen(task.remind_at)}
-                        {task.reminder_count > 0 && (
-                          <span style={{ color: "var(--faint)", fontWeight: 400 }} title={`${task.reminder_count} reminder(s) sent`}> · {task.reminder_count}×</span>
-                        )}
-                      </>
-                    ) : task.reminder_count > 0 ? (
-                      <span style={{ color: "var(--faint)" }}>sent {task.reminder_count}×</span>
-                    ) : (
-                      "—"
-                    )}
-                  </div>
-
-                  <div style={{ fontSize: 12.5, color: "var(--muted)" }} title={fmtExact(task.due_at)}>
-                    {fmtWhen(task.due_at)}
-                  </div>
-
-                  <div className="row-actions pinned">
-                    {isOpen(task) ? (
-                      <button className="act act-good" title="Mark as done" aria-label={`Mark ${task.title} as done`} onClick={() => setStatusOf(task, "done")}>
-                        <Icon d={I.check} size={15} stroke={2.2} />
+                        <Icon d={I.more} size={16} stroke={2.6} />
                       </button>
-                    ) : (
-                      <button className="act" title="Reopen task" aria-label={`Reopen ${task.title}`} onClick={() => setStatusOf(task, "new")}>
-                        <Icon d={I.refresh} size={14} stroke={2} />
-                      </button>
-                    )}
-                    <button
-                      className={`act${menu?.task.id === task.id ? " on" : ""}`}
-                      title="More actions"
-                      aria-label={`More actions for ${task.title}`}
-                      aria-haspopup="menu"
-                      aria-expanded={menu?.task.id === task.id}
-                      onClick={(e) => setMenu({ task, anchor: e.currentTarget.getBoundingClientRect() })}
-                    >
-                      <Icon d={I.more} size={16} stroke={2.6} />
-                    </button>
+                    </div>
                   </div>
-                </div>
+                </Fragment>
               );
             })}
           </div>

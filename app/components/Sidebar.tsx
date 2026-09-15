@@ -25,7 +25,6 @@ const NAV_ITEMS: Array<{
   { href: "/clients",   d: I.users,   label: "Clients",   permission: "view_invoices" },
   { href: "/bulk-converter", d: I.excel, label: "Bulk Converter", permission: "export_excel" },
   { href: "/templates", d: I.copy,    label: "Templates", permission: "view_invoices" },
-  { href: "/reports",   d: I.chart,   label: "Reports",   permission: "export_excel" },
   { href: "/settings",  d: I.cog,     label: "Settings",  permission: null },
 ];
 

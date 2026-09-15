@@ -114,7 +114,7 @@ export function Overview() {
 
       <StatsRow cards={cards} />
 
-      <section className="report-card">
+      <section className="panel-card">
         <div className="dash-panel-h">
           <h3>Recent invoices</h3>
           <Link href="/invoices" className="btn sm">
