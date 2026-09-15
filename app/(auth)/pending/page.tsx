@@ -14,6 +14,9 @@ export const metadata: Metadata = { title: "Awaiting approval — Oranje" };
  * approval that is never coming.
  */
 export default async function PendingPage() {
+  // getAuthProfile() only returns null when there is genuinely no session, so
+  // this cannot bounce a signed-in user back to /login (see the loop note in
+  // lib/auth/session.ts).
   const profile = await getAuthProfile();
   if (!profile) redirect("/login");
   if (profile.status === "active") redirect("/");

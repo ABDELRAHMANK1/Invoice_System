@@ -37,7 +37,26 @@ export async function getAuthProfile(): Promise<AuthProfile | null> {
     .eq("id", userData.user.id)
     .maybeSingle();
 
-  if (error || !data) return null;
+  // Authenticated but not provisioned — no profile row, or the profile query
+  // failed (the table isn't there yet, RLS refused it). Report PENDING rather
+  // than null.
+  //
+  // null here would mean "no session", and that produces a redirect LOOP:
+  // middleware sees a session with no active profile and sends the user to
+  // /pending, /pending reads null and sends them to /login, middleware sees the
+  // session again and sends them to "/" — forever. Pending is also the truthful
+  // answer (they have an account and no access yet) and it fails CLOSED, since
+  // `can()` denies every permission to a non-active status.
+  if (error || !data) {
+    return {
+      id: userData.user.id,
+      email: userData.user.email ?? null,
+      full_name: (userData.user.user_metadata?.full_name as string | undefined) ?? null,
+      role: "employee",
+      status: "pending",
+      permissions: [],
+    };
+  }
 
   return {
     id: data.id as string,
