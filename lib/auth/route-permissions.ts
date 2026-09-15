@@ -84,7 +84,6 @@ const API_RULES: Rule[] = [
 const PAGE_RULES: Array<{ prefix: string; permission: PermissionKey }> = [
   { prefix: "/settings/users", permission: "manage_users" },
   { prefix: "/bulk-converter", permission: "export_excel" },
-  { prefix: "/reports",        permission: "export_excel" },
   { prefix: "/invoices",       permission: "view_invoices" },
   { prefix: "/files",          permission: "view_invoices" },
   { prefix: "/tasks",          permission: "view_invoices" },
